@@ -1,1 +1,3 @@
-# mash-2dgs
+# MASH 2DGS
+
+
