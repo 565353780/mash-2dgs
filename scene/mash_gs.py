@@ -95,11 +95,11 @@ def matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
     return standardize_quaternion(out)
 
 class MashGS(object):
-    def __init__(self, sh_degree: int, anchor_num: int=400,
+    def __init__(self, sh_degree: int, anchor_num: int=40,
         mask_degree_max: int = 3,
         sh_degree_max: int = 2,
-        sample_phi_num: int = 10,
-        sample_theta_num: int = 10,
+        sample_phi_num: int = 4,
+        sample_theta_num: int = 4,
         use_inv: bool = True,
         idx_dtype=torch.int64,
         dtype=torch.float32,
@@ -120,7 +120,7 @@ class MashGS(object):
         self.mash = SimpleMash(anchor_num, mask_degree_max, sh_degree_max, sample_phi_num, sample_theta_num, use_inv, idx_dtype, dtype, device)
         self.mash.setGradState(True)
 
-        self.surface_dist = 1.0
+        self.surface_dist = 0.1
         return
 
     def updateGSParams(self) -> bool:
@@ -510,7 +510,8 @@ class MashGS(object):
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
 
         single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
-        selected_anchor_mask = torch.any(selected_pts_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1)
+        anchor_densify_prob = torch.sum(selected_pts_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1) / single_anchor_gs_num
+        selected_anchor_mask = anchor_densify_prob > 0.5
         selected_anchor_point_mask = selected_anchor_mask.unsqueeze(1).repeat(1, single_anchor_gs_num).reshape(-1)
 
         samples = 0.01 * torch.randn([int(torch.sum(selected_anchor_mask == True)) * N, 3], dtype=self.mash.dtype, device=self.mash.device)
@@ -536,7 +537,8 @@ class MashGS(object):
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
 
         single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
-        selected_anchor_mask = torch.any(selected_pts_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1)
+        anchor_densify_prob = torch.sum(selected_pts_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1) / single_anchor_gs_num
+        selected_anchor_mask = anchor_densify_prob > 0.5
         selected_anchor_point_mask = selected_anchor_mask.unsqueeze(1).repeat(1, single_anchor_gs_num).reshape(-1)
 
         new_mask_params = self.mash.mask_params[selected_anchor_mask]
@@ -564,7 +566,8 @@ class MashGS(object):
             prune_point_mask = torch.logical_or(torch.logical_or(prune_point_mask, big_points_vs), big_points_ws)
 
         single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
-        prune_anchor_mask = torch.all(prune_point_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1)
+        anchor_prune_prob = torch.sum(prune_point_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1) / single_anchor_gs_num
+        prune_anchor_mask = anchor_prune_prob > 0.5
         self.prune_anchors(prune_anchor_mask)
 
         torch.cuda.empty_cache()

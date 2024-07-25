@@ -11,7 +11,7 @@
 
 import os
 import torch
-from random import randint
+from random import gauss, randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
@@ -28,13 +28,15 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-# from scene import GaussianModel
-from scene.mash_gs import MashGS as GaussianModel
+from scene import GaussianModel
+from scene.mash_gs import MashGS
+
+GSMODEL = MashGS
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree)
+    gaussians = GSMODEL(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if checkpoint:
@@ -119,6 +121,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
 
+                tb_writer.add_scalar('Gaussian/scale', torch.mean(gaussians.get_scaling).detach().clone().cpu().numpy(), iteration)
+                tb_writer.add_scalar('Gaussian/opacity', torch.mean(gaussians.get_opacity).detach().clone().cpu().numpy(), iteration)
+                if isinstance(gaussians, MashGS):
+                    tb_writer.add_scalar('MASH/anchor_num', gaussians.mash.anchor_num, iteration)
+
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -141,7 +148,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
-                gaussians.updateGSParams()
+                if isinstance(gaussians, MashGS):
+                    gaussians.updateGSParams()
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
