@@ -21,10 +21,9 @@ from plyfile import PlyData, PlyElement
 
 from utils.sh_utils import RGB2SH
 from utils.system_utils import mkdir_p
-from scene.gaussian_model import GaussianModel
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import build_scaling_rotation
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func
 
 from ma_sh.Config.weights import W0
 from ma_sh.Config.constant import EPSILON
@@ -111,7 +110,7 @@ class MashGS(object):
         self._features_rest = torch.empty(0)
         self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
-        self.anchor_gradient_accum = torch.empty(0)
+        self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
@@ -159,7 +158,7 @@ class MashGS(object):
             self._features_rest,
             self._opacity,
             self.max_radii2D,
-            self.anchor_gradient_accum,
+            self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
@@ -179,13 +178,13 @@ class MashGS(object):
         self._rotation, 
         self._opacity,
         self.max_radii2D, 
-        anchor_gradient_accum, 
+        xyz_gradient_accum, 
         denom,
         opt_dict, 
         self.spatial_lr_scale) = model_args
         self.mash.loadParams(mask_params, sh_params, rotate_vectors, positions)
         self.training_setup(training_args)
-        self.anchor_gradient_accum = anchor_gradient_accum
+        self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
 
@@ -248,9 +247,8 @@ class MashGS(object):
 
         self.updateGSParams()
 
-        single_anchor_gs_num = int(self._xyz.shape[0] / self.mash.anchor_num)
-
-        full_colors = anchor_colors.repeat(single_anchor_gs_num, 0)
+        single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
+        full_colors = anchor_colors.repeat(single_anchor_gs_num, axis=0)
         return full_colors
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
@@ -279,8 +277,8 @@ class MashGS(object):
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
-        self.anchor_gradient_accum = torch.zeros((self.mash.anchor_num, 1), device="cuda")
-        self.denom = torch.zeros((self.mash.anchor_num, 1), device="cuda")
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
             {'params': [self.mash.mask_params], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "mask_params"},
@@ -402,9 +400,15 @@ class MashGS(object):
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def _prune_optimizer(self, mask):
+    def _prune_optimizer(self, anchor_mask, point_mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+
+            if group["name"] in ["mask_params", "sh_params", "rotate_vectors", "positions"]:
+                mask = anchor_mask
+            else:
+                mask = point_mask
+
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -423,24 +427,28 @@ class MashGS(object):
     def prune_anchors(self, mask):
         valid_anchors_mask = ~mask
 
-        single_anchor_gs_num = int(self._xyz.shape[0] / self.mash.anchor_num)
-        valid_points_mask = valid_anchors_mask.unsqueeze(1).repeat(single_anchor_gs_num).reshape(-1)
+        single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
+        valid_points_mask = valid_anchors_mask.unsqueeze(1).repeat(1, single_anchor_gs_num).reshape(-1)
 
-        optimizable_tensors = self._prune_optimizer(valid_anchors_mask)
+        optimizable_tensors = self._prune_optimizer(valid_anchors_mask, valid_points_mask)
 
+        self.mash.anchor_num = optimizable_tensors["positions"].shape[0]
+        self.mash.reset()
         self.mash.loadParams(
             optimizable_tensors["mask_params"],
             optimizable_tensors["sh_params"],
             optimizable_tensors["rotate_vectors"],
             optimizable_tensors["positions"]
         )
+        self.updateGSParams()
+
         self._features_dc = optimizable_tensors["f_dc"]
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
 
-        self.anchor_gradient_accum = self.anchor_gradient_accum[valid_anchors_mask]
+        self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
-        self.denom = self.denom[valid_anchors_mask]
+        self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
@@ -475,6 +483,8 @@ class MashGS(object):
         "opacity": new_opacities}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
+        self.mash.anchor_num = optimizable_tensors["positions"].shape[0]
+        self.mash.reset()
         self.mash.loadParams(
             optimizable_tensors["mask_params"],
             optimizable_tensors["sh_params"],
@@ -487,35 +497,32 @@ class MashGS(object):
         self._features_rest = optimizable_tensors["f_rest"]
         self._opacity = optimizable_tensors["opacity"]
 
-        self.anchor_gradient_accum = torch.zeros((self.mash.anchor_num, 1), device="cuda")
-        self.denom = torch.zeros((self.mash.anchor_num, 1), device="cuda")
+        self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         # Extract points that satisfy the gradient condition
-        padded_grad = torch.zeros((self.mash.anchor_num), device="cuda")
+        padded_grad = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
-        selected_anchor_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        selected_anchor_mask = torch.logical_and(selected_anchor_mask,
+        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
 
-        single_anchor_gs_num = int(self._xyz.shape[0] / self.mash.anchor_num)
-        selected_point_mask = selected_anchor_mask.unsqueeze(1).repeat(single_anchor_gs_num).reshape(-1)
+        single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
+        selected_anchor_mask = torch.any(selected_pts_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1)
+        selected_anchor_point_mask = selected_anchor_mask.unsqueeze(1).repeat(1, single_anchor_gs_num).reshape(-1)
 
-        stds = self.get_scaling[selected_anchor_mask].repeat(N,1)
-        stds = torch.cat([stds, 0 * torch.ones_like(stds[:,:1])], dim=-1)
-        means = torch.zeros_like(stds)
-        samples = torch.normal(mean=means, std=stds)
-        rots = build_rotation(self._rotation[selected_anchor_mask]).repeat(N,1,1)
+        samples = 0.01 * torch.randn([int(torch.sum(selected_anchor_mask == True)) * N, 3], dtype=self.mash.dtype, device=self.mash.device)
 
         new_mask_params = self.mash.mask_params[selected_anchor_mask].repeat(N,1) / (0.8*N)
         new_sh_params = self.mash.sh_params[selected_anchor_mask].repeat(N,1)
         new_rotate_vectors = self.mash.rotate_vectors[selected_anchor_mask].repeat(N,1)
-        new_positions = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.mash.positions[selected_anchor_mask].repeat(N, 1)
+        new_positions = samples + self.mash.positions[selected_anchor_mask].repeat(N, 1)
 
-        new_features_dc = self._features_dc[selected_point_mask].repeat(N,1,1)
-        new_features_rest = self._features_rest[selected_point_mask].repeat(N,1,1)
-        new_opacity = self._opacity[selected_point_mask].repeat(N,1)
+        new_features_dc = self._features_dc[selected_anchor_point_mask].repeat(N,1,1)
+        new_features_rest = self._features_rest[selected_anchor_point_mask].repeat(N,1,1)
+        new_opacity = self._opacity[selected_anchor_point_mask].repeat(N,1)
 
         self.densification_postfix(new_mask_params, new_sh_params, new_rotate_vectors, new_positions, new_features_dc, new_features_rest, new_opacity)
 
@@ -524,26 +531,27 @@ class MashGS(object):
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
-        selected_anchor_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
-        selected_anchor_mask = torch.logical_and(selected_anchor_mask,
+        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
+        selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
 
-        single_anchor_gs_num = int(self._xyz.shape[0] / self.mash.anchor_num)
-        selected_point_mask = selected_anchor_mask.unsqueeze(1).repeat(single_anchor_gs_num).reshape(-1)
+        single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
+        selected_anchor_mask = torch.any(selected_pts_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1)
+        selected_anchor_point_mask = selected_anchor_mask.unsqueeze(1).repeat(1, single_anchor_gs_num).reshape(-1)
 
         new_mask_params = self.mash.mask_params[selected_anchor_mask]
         new_sh_params = self.mash.sh_params[selected_anchor_mask]
         new_rotate_vectors = self.mash.rotate_vectors[selected_anchor_mask]
         new_positions = self.mash.positions[selected_anchor_mask]
 
-        new_features_dc = self._features_dc[selected_point_mask]
-        new_features_rest = self._features_rest[selected_point_mask]
-        new_opacities = self._opacity[selected_point_mask]
+        new_features_dc = self._features_dc[selected_anchor_point_mask]
+        new_features_rest = self._features_rest[selected_anchor_point_mask]
+        new_opacities = self._opacity[selected_anchor_point_mask]
 
         self.densification_postfix(new_mask_params, new_sh_params, new_rotate_vectors, new_positions, new_features_dc, new_features_rest, new_opacities)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
-        grads = self.anchor_gradient_accum / self.denom
+        grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
         self.densify_and_clone(grads, max_grad, extent)
@@ -555,21 +563,12 @@ class MashGS(object):
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_point_mask = torch.logical_or(torch.logical_or(prune_point_mask, big_points_vs), big_points_ws)
 
-        single_anchor_gs_num = int(self._xyz.shape[0] / self.mash.anchor_num)
-        prune_anchor_point_mask = prune_point_mask.reshape(single_anchor_gs_num, -1)
-        prune_anchor_mask = torch.sum(prune_anchor_point_mask, 1)
-        print(prune_anchor_mask)
-        exit()
-        self.prune_anchors(prune_mask)
+        single_anchor_gs_num = int(self.get_xyz.shape[0] / self.mash.anchor_num)
+        prune_anchor_mask = torch.all(prune_point_mask.reshape(self.mash.anchor_num, single_anchor_gs_num), dim=1)
+        self.prune_anchors(prune_anchor_mask)
 
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        anchor_point_update_filter = update_filter.reshape(self.mash.anchor_num, -1)
-        anchor_update_filter = torch.any(anchor_point_update_filter, dim=1)
-
-        anchor_point_grad = torch.norm(viewspace_point_tensor.grad, dim=-1, keepdim=True).reshape(self.mash.anchor_num, -1)
-        anchor_grad = torch.sum(anchor_point_grad, dim=1).unsqueeze(1)
-
-        self.anchor_gradient_accum[anchor_update_filter] += anchor_grad[anchor_update_filter]
-        self.denom[anchor_update_filter] += 1
+        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
+        self.denom[update_filter] += 1

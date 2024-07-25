@@ -92,8 +92,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         total_loss.backward()
 
-        gaussians.updateGSParams()
-
         iter_end.record()
 
         with torch.no_grad():
@@ -142,6 +140,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+
+                gaussians.updateGSParams()
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
