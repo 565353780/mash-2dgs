@@ -32,14 +32,14 @@ from mash_2dgs.Method.render import renderMashGS
 import mash_cpp
 
 USE_TENSORBOARD = True
-GSMODEL = MashGS
+GSMODEL = GaussianModel
 render_freq = -1
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     save_graph = False
-    fit_loss_weight = 1.0
-    coverage_loss_weight = 1.0
-    boundary_connect_loss_weight = 1.0
+    fit_loss_weight = 10.0
+    coverage_loss_weight = 10.0
+    boundary_connect_loss_weight = 10.0
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -115,13 +115,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
 
-        # opacity_loss = 0.01 * torch.nn.MSELoss()(gaussians.get_opacity, torch.ones_like(gaussians._opacity))
+        if iteration > opt.densify_until_iter:
+            opacity_loss = 1e-3 * torch.nn.MSELoss()(gaussians.get_opacity, torch.ones_like(gaussians._opacity))
+        else:
+            opacity_loss = 1e-3 * torch.nn.MSELoss()(gaussians.get_opacity, torch.zeros_like(gaussians._opacity))
 
         fit_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
         coverage_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
         boundary_connect_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
         mash_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
-        if False and isinstance(gaussians, MashGS):
+        if True and isinstance(gaussians, MashGS):
             boundary_pts, inner_pts, _ = gaussians.mash.toSamplePoints()
             fit_loss, coverage_loss = mash_cpp.toChamferDistanceLoss(
                 torch.vstack([boundary_pts, inner_pts]), gaussians.gt_points
@@ -142,7 +145,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             )
 
         # loss
-        total_loss = loss + dist_loss + normal_loss # + opacity_loss + mash_loss
+        total_loss = loss + dist_loss + normal_loss + opacity_loss + mash_loss
 
         total_loss.backward()
 
@@ -333,8 +336,8 @@ if __name__ == "__main__":
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(0, 30000, 1000)))
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(0, 30000, 1000)))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)

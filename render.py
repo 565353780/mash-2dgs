@@ -30,7 +30,7 @@ import open3d as o3d
 
 from mash_2dgs.Model.mash_gs import MashGS
 
-GSMODEL = MashGS
+GSMODEL = GaussianModel
 
 if __name__ == "__main__":
     # Set up command line argument parser

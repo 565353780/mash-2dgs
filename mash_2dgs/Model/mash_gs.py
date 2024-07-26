@@ -21,11 +21,11 @@ from ma_sh.Method.pcd import getPointCloud, downSample
 from mash_2dgs.Method.rotation import matrix_to_quaternion
 
 class MashGS(object):
-    def __init__(self, sh_degree: int, anchor_num: int=4000,
+    def __init__(self, sh_degree: int, anchor_num: int=100,
         mask_degree_max: int = 0,
-        sh_degree_max: int = 0,
-        sample_phi_num: int = 3,
-        sample_theta_num: int = 1,
+        sh_degree_max: int = 1,
+        sample_phi_num: int = 10,
+        sample_theta_num: int = 4,
         use_inv: bool = True,
         idx_dtype=torch.int64,
         dtype=torch.float32,
@@ -222,15 +222,15 @@ class MashGS(object):
             {'params': [self.mash.mask_params], 'lr': training_args.mask_lr, "name": "mask_params"},
             {'params': [self.mash.sh_params], 'lr': training_args.sh_lr * self.spatial_lr_scale, "name": "sh_params"},
             {'params': [self.mash.rotate_vectors], 'lr': training_args.rotate_lr * self.spatial_lr_scale, "name": "rotate_vectors"},
-            {'params': [self.mash.positions], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "positions"},
+            {'params': [self.mash.positions], 'lr': training_args.mash_position_lr_init * self.spatial_lr_scale, "name": "positions"},
             {'params': [self._features_dc], 'lr': training_args.feature_lr, "name": "f_dc"},
             {'params': [self._features_rest], 'lr': training_args.feature_lr / 20.0, "name": "f_rest"},
             {'params': [self._opacity], 'lr': training_args.opacity_lr, "name": "opacity"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
-                                                    lr_final=training_args.position_lr_final*self.spatial_lr_scale,
+        self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.mash_position_lr_init*self.spatial_lr_scale,
+                                                    lr_final=training_args.mash_position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
                                                     max_steps=training_args.position_lr_max_steps)
 
