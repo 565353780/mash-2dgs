@@ -15,6 +15,7 @@ import uuid
 import torch
 from tqdm import tqdm
 from random import randint
+from torchviz import make_dot
 from torch.utils.tensorboard import SummaryWriter
 
 from scene import Scene, GaussianModel
@@ -28,11 +29,18 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 from mash_2dgs.Model.mash_gs import MashGS
 from mash_2dgs.Method.render import renderMashGS
 
+import mash_cpp
+
 USE_TENSORBOARD = True
 GSMODEL = MashGS
-render_freq = 1000
+render_freq = -1
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
+    save_graph = False
+    fit_loss_weight = 1.0
+    coverage_loss_weight = 1.0
+    boundary_connect_loss_weight = 1.0
+
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GSMODEL(dataset.sh_degree)
@@ -73,6 +81,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
+        if save_graph:
+            g = make_dot(
+                torch.mean(image),
+                params={
+                    "mask_params": gaussians.mash.mask_params,
+                    "sh_params": gaussians.mash.sh_params,
+                    "rotate_vectors": gaussians.mash.rotate_vectors,
+                    "positions": gaussians.mash.positions,
+                    "_features_dc": gaussians._features_dc,
+                    "_features_rest": gaussians._features_rest,
+                    "_opacity": gaussians._opacity,
+                },
+            )
+
+            g.render("./output/grad_graph/Mash.gv", view=False)
+            save_graph = False
+
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
@@ -80,6 +105,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # regularization
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
+        # lambda_normal = opt.lambda_normal
+        # lambda_dist = opt.lambda_dist
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
@@ -88,8 +115,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
 
+        # opacity_loss = 0.01 * torch.nn.MSELoss()(gaussians.get_opacity, torch.ones_like(gaussians._opacity))
+
+        fit_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
+        coverage_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
+        boundary_connect_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
+        mash_loss = torch.tensor(0.0).type(dist_loss.dtype).to(dist_loss.device)
+        if False and isinstance(gaussians, MashGS):
+            boundary_pts, inner_pts, _ = gaussians.mash.toSamplePoints()
+            fit_loss, coverage_loss = mash_cpp.toChamferDistanceLoss(
+                torch.vstack([boundary_pts, inner_pts]), gaussians.gt_points
+            )
+
+            boundary_connect_loss = mash_cpp.toBoundaryConnectLoss(
+                gaussians.mash.anchor_num, boundary_pts, gaussians.mash.mask_boundary_phi_idxs
+            )
+
+            weighted_fit_loss = fit_loss_weight * fit_loss
+            weighted_coverage_loss = coverage_loss_weight * coverage_loss
+            weighted_boundary_connect_loss = (
+                boundary_connect_loss_weight * boundary_connect_loss
+            )
+
+            mash_loss = (
+                weighted_fit_loss + weighted_coverage_loss + weighted_boundary_connect_loss
+            )
+
         # loss
-        total_loss = loss + dist_loss + normal_loss
+        total_loss = loss + dist_loss + normal_loss # + opacity_loss + mash_loss
 
         total_loss.backward()
 
@@ -127,6 +180,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 tb_writer.add_scalar('Gaussian/prune_num', gaussians.prune_pts_num, iteration)
                 if isinstance(gaussians, MashGS):
                     tb_writer.add_scalar('Gaussian/anchor_num', gaussians.mash.anchor_num, iteration)
+                    tb_writer.add_scalar('Loss/fit', fit_loss.item(), iteration)
+                    tb_writer.add_scalar('Loss/coverage', coverage_loss.item(), iteration)
+                    tb_writer.add_scalar('Loss/boundary_connect', boundary_connect_loss.item(), iteration)
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
@@ -156,6 +212,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if render_freq > 0:
                         if iteration % render_freq == 0:
                             renderMashGS(gaussians)
+
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

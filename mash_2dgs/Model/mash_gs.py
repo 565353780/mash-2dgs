@@ -18,17 +18,14 @@ from ma_sh.Config.constant import EPSILON
 from ma_sh.Model.simple_mash import SimpleMash
 from ma_sh.Method.pcd import getPointCloud, downSample
 
-from mash_2dgs.Method.rotation import (
-    matrix_to_quaternion,
-    quaternion_to_matrix
-)
+from mash_2dgs.Method.rotation import matrix_to_quaternion
 
 class MashGS(object):
-    def __init__(self, sh_degree: int, anchor_num: int=400,
-        mask_degree_max: int = 3,
-        sh_degree_max: int = 2,
-        sample_phi_num: int = 4,
-        sample_theta_num: int = 4,
+    def __init__(self, sh_degree: int, anchor_num: int=4000,
+        mask_degree_max: int = 0,
+        sh_degree_max: int = 0,
+        sample_phi_num: int = 3,
+        sample_theta_num: int = 1,
         use_inv: bool = True,
         idx_dtype=torch.int64,
         dtype=torch.float32,
@@ -50,18 +47,22 @@ class MashGS(object):
         self.mash.setGradState(True)
 
         self.surface_dist = 0.05
-        self.split_thresh = 0.4
-        self.clone_thresh = 0.2
-        self.prune_thresh = 0.6
+
+        self.split_thresh = 0.5
+        self.clone_thresh = 0.5
+        self.prune_thresh = 0.5
 
         self.split_pts_num = 0
         self.clone_pts_num = 0
         self.prune_pts_num = 0
+
+        self.gt_points = torch.empty(0)
         return
 
     def updateGSParams(self) -> bool:
         centers, axis_lengths, rotate_matrixs = self.mash.toSimpleSampleEllipses()
 
+        axis_lengths[torch.isnan(axis_lengths)] = 0.0
         self._xyz = centers
         self._scaling = axis_lengths
         self._rotation = matrix_to_quaternion(rotate_matrixs)
@@ -189,6 +190,7 @@ class MashGS(object):
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         full_colors = self.initMashFromPcd(pcd)
+        self.gt_points = torch.from_numpy(pcd.points).type(self.mash.positions.dtype).to(self.mash.positions.device).unsqueeze(0)
 
         if full_colors.shape[0] == 0:
             print("[ERROR][MashGS::create_from_pcd]")
@@ -452,12 +454,38 @@ class MashGS(object):
         selected_anchor_mask = anchor_densify_prob > self.split_thresh
         selected_anchor_point_mask = selected_anchor_mask.unsqueeze(1).repeat(1, single_anchor_gs_num).reshape(-1)
 
-        samples = 0.1 * torch.randn([int(torch.sum(selected_anchor_mask == True)) * N, 3], dtype=self.mash.dtype, device=self.mash.device)
+        stds = self.get_scaling[selected_pts_mask]
+        stds = torch.cat([stds, 0 * torch.ones_like(stds[:,:1])], dim=-1)
+        means = torch.zeros_like(stds)
+        samples = torch.normal(mean=means, std=stds)
+        rots = build_rotation(self._rotation[selected_pts_mask])
+        new_delta_xyzs = torch.bmm(rots, samples.unsqueeze(-1))
+
+        anchor_selected_pts_mask = selected_pts_mask.reshape(self.mash.anchor_num, single_anchor_gs_num)
+
+        anchor_delta_xyzs = []
+        used_pts_num = 0
+        for i in range(self.mash.anchor_num):
+            if not selected_anchor_mask[i]:
+                continue
+
+            current_anchor_selected_pts_num = int(torch.sum(anchor_selected_pts_mask[i] == True))
+            current_anchor_delta_xyzs = new_delta_xyzs[used_pts_num: used_pts_num + current_anchor_selected_pts_num]
+            used_pts_num += current_anchor_selected_pts_num
+
+            current_anchor_delta_xyz = torch.mean(current_anchor_delta_xyzs, dim=0)
+
+            anchor_delta_xyzs.append(current_anchor_delta_xyz)
+
+        if len(anchor_delta_xyzs) == 0:
+            samples = 0.0
+        else:
+            samples = torch.vstack(anchor_delta_xyzs).reshape(-1, 3)
 
         new_mask_params = self.mash.mask_params[selected_anchor_mask].repeat(N,1) / (0.8*N)
         new_sh_params = self.mash.sh_params[selected_anchor_mask].repeat(N,1)
         new_rotate_vectors = self.mash.rotate_vectors[selected_anchor_mask].repeat(N,1)
-        new_positions = samples + self.mash.positions[selected_anchor_mask].repeat(N, 1)
+        new_positions = (samples + self.mash.positions[selected_anchor_mask]).repeat(N, 1)
 
         new_features_dc = self._features_dc[selected_anchor_point_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_anchor_point_mask].repeat(N,1,1)

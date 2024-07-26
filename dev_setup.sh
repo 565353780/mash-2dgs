@@ -1,10 +1,16 @@
+cd ..
+git clone git@github.com:565353780/ma-sh.git
+
+cd ma-sh
+./dev_setup.sh
+
 pip install -U torch torchvision torchaudio
 
 pip install -U ffmpeg pillow open3d mediapy lpips \
   scikit-image tqdm trimesh plyfile opencv-python \
   tensorboard
 
-cd ./submodules/diff-surfel-rasterization
+cd ../mash-2dgs/submodules/diff-surfel-rasterization
 pip install -e .
 
 cd ../simple-knn
