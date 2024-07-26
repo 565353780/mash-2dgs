@@ -10,28 +10,27 @@
 #
 
 import os
+import sys
+import uuid
 import torch
-from random import gauss, randint
+from tqdm import tqdm
+from random import randint
+from torch.utils.tensorboard import SummaryWriter
+
+from scene import Scene, GaussianModel
+from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
-import sys
-from scene import Scene
-from utils.general_utils import safe_state
-import uuid
-from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-try:
-    from torch.utils.tensorboard import SummaryWriter
-    TENSORBOARD_FOUND = True
-except ImportError:
-    TENSORBOARD_FOUND = False
 
-from scene import GaussianModel
 from mash_2dgs.Model.mash_gs import MashGS
+from mash_2dgs.Method.render import renderMashGS
 
+USE_TENSORBOARD = True
 GSMODEL = MashGS
+render_freq = 1000
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
@@ -56,7 +55,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    for iteration in range(first_iter, opt.iterations + 1):        
+    for iteration in range(first_iter, opt.iterations + 1):
 
         iter_start.record()
 
@@ -154,6 +153,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if isinstance(gaussians, MashGS):
                     gaussians.updateGSParams()
 
+                    if render_freq > 0:
+                        if iteration % render_freq == 0:
+                            renderMashGS(gaussians)
+
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
@@ -198,7 +201,7 @@ def prepare_output_and_logger(args):
 
     # Create Tensorboard writer
     tb_writer = None
-    if TENSORBOARD_FOUND:
+    if USE_TENSORBOARD:
         tb_writer = SummaryWriter(args.model_path)
     else:
         print("Tensorboard not available: not logging progress")
