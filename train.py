@@ -29,7 +29,7 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 from scene import GaussianModel
-from scene.mash_gs import MashGS
+from mash_2dgs.Model.mash_gs import MashGS
 
 GSMODEL = MashGS
 
@@ -118,13 +118,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Log and save
             if tb_writer is not None:
-                tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
-                tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
+                tb_writer.add_scalar('Loss/dist', ema_dist_for_log, iteration)
+                tb_writer.add_scalar('Loss/normal', ema_normal_for_log, iteration)
 
                 tb_writer.add_scalar('Gaussian/scale', torch.mean(gaussians.get_scaling).detach().clone().cpu().numpy(), iteration)
                 tb_writer.add_scalar('Gaussian/opacity', torch.mean(gaussians.get_opacity).detach().clone().cpu().numpy(), iteration)
+                tb_writer.add_scalar('Gaussian/split_num', gaussians.split_pts_num, iteration)
+                tb_writer.add_scalar('Gaussian/clone_num', gaussians.clone_pts_num, iteration)
+                tb_writer.add_scalar('Gaussian/prune_num', gaussians.prune_pts_num, iteration)
                 if isinstance(gaussians, MashGS):
-                    tb_writer.add_scalar('MASH/anchor_num', gaussians.mash.anchor_num, iteration)
+                    tb_writer.add_scalar('Gaussian/anchor_num', gaussians.mash.anchor_num, iteration)
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
@@ -204,10 +207,10 @@ def prepare_output_and_logger(args):
 @torch.no_grad()
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
     if tb_writer:
-        tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
-        tb_writer.add_scalar('iter_time', elapsed, iteration)
-        tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+        tb_writer.add_scalar('Loss/reg', Ll1.item(), iteration)
+        tb_writer.add_scalar('Loss/total', loss.item(), iteration)
+        tb_writer.add_scalar('Gaussian/iter_time', elapsed, iteration)
+        tb_writer.add_scalar('Gaussian/total_points', scene.gaussians.get_xyz.shape[0], iteration)
 
     # Report test and samples of training set
     if iteration in testing_iterations:
@@ -256,8 +259,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test /= len(config['cameras'])
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                    tb_writer.add_scalar('Val/l1', l1_test, iteration)
+                    tb_writer.add_scalar('Val/psnr', psnr_test, iteration)
 
         torch.cuda.empty_cache()
 
