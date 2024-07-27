@@ -9,22 +9,21 @@
 # For inquiries contact  huangbb@shanghaitech.edu.cn
 #
 
+import os
 import torch
 import numpy as np
-import os
-import math
-from tqdm import tqdm
-from utils.render_utils import save_img_f32, save_img_u8
-from functools import partial
 import open3d as o3d
-import trimesh
+from tqdm import tqdm
+from functools import partial
+
+from utils.render_utils import save_img_f32, save_img_u8
 
 def post_process_mesh(mesh, cluster_to_keep=1000):
     """
     Post-process a mesh to filter out floaters and disconnected parts
     """
     import copy
-    print("post processing the mesh to have {} clusterscluster_to_kep".format(cluster_to_keep))
+    print("post processing the mesh to have {} clusters".format(cluster_to_keep))
     mesh_0 = copy.deepcopy(mesh)
     with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
             triangle_clusters, cluster_n_triangles, cluster_area = (mesh_0.cluster_connected_triangles())
@@ -32,6 +31,10 @@ def post_process_mesh(mesh, cluster_to_keep=1000):
     triangle_clusters = np.asarray(triangle_clusters)
     cluster_n_triangles = np.asarray(cluster_n_triangles)
     cluster_area = np.asarray(cluster_area)
+
+    if len(cluster_n_triangles) < cluster_to_keep:
+        cluster_to_keep = len(cluster_n_triangles)
+
     n_cluster = np.sort(cluster_n_triangles.copy())[-cluster_to_keep]
     n_cluster = max(n_cluster, 50) # filter meshes smaller than 50
     triangles_to_remove = cluster_n_triangles[triangle_clusters] < n_cluster

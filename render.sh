@@ -1,5 +1,6 @@
 python render.py \
-  -s /home/chli/Dataset/NeRF/hotdog_train \
-  --images dense/images \
-  -m ./output/c50c5985-2 \
-  --iteration 1000
+  -s /home/chli/Dataset/BlenderNeRF/bunny \
+  --images train \
+  -m ./output/d54fadc5-a \
+  --num_cluster 1 \
+  --iteration 30000

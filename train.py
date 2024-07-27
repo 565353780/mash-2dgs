@@ -32,7 +32,7 @@ from mash_2dgs.Method.render import renderMashGS
 import mash_cpp
 
 USE_TENSORBOARD = True
-GSMODEL = MashGS
+GSMODEL = GaussianModel
 render_freq = -1
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
@@ -339,7 +339,7 @@ if __name__ == "__main__":
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(0, 30000, 100)))
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=list(range(0, 30000, 1000)))
     parser.add_argument("--save_iterations", nargs="+", type=int, default=list(range(0, 30000, 1000)))
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
