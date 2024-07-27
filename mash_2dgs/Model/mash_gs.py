@@ -47,11 +47,11 @@ class MashGS(object):
         self.mash.setGradState(True)
 
         self.surface_dist = 0.5
-        self.split_dist_weight = 2.0
+        self.split_dist_weight = 4.0
 
         self.split_thresh = 0.2
         self.clone_thresh = 0.2
-        self.prune_thresh = 0.9
+        self.prune_thresh = 0.8
 
         self.split_pts_num = 0
         self.clone_pts_num = 0

@@ -115,7 +115,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
 
-        if False and isinstance(gaussians, GaussianModel):
+        if True or isinstance(gaussians, GaussianModel):
             if iteration > opt.densify_until_iter:
                 opacity_loss = 1e-3 * torch.nn.MSELoss()(gaussians.get_opacity, torch.ones_like(gaussians._opacity))
             else:
