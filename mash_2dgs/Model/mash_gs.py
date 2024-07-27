@@ -21,11 +21,11 @@ from ma_sh.Method.pcd import getPointCloud, downSample
 from mash_2dgs.Method.rotation import matrix_to_quaternion
 
 class MashGS(object):
-    def __init__(self, sh_degree: int, anchor_num: int=100,
+    def __init__(self, sh_degree: int, anchor_num: int=400,
         mask_degree_max: int = 0,
-        sh_degree_max: int = 1,
+        sh_degree_max: int = 0,
         sample_phi_num: int = 10,
-        sample_theta_num: int = 4,
+        sample_theta_num: int = 40,
         use_inv: bool = True,
         idx_dtype=torch.int64,
         dtype=torch.float32,
@@ -46,11 +46,12 @@ class MashGS(object):
         self.mash = SimpleMash(anchor_num, mask_degree_max, sh_degree_max, sample_phi_num, sample_theta_num, use_inv, idx_dtype, dtype, device)
         self.mash.setGradState(True)
 
-        self.surface_dist = 0.05
+        self.surface_dist = 0.5
+        self.split_dist_weight = 2.0
 
-        self.split_thresh = 0.5
-        self.clone_thresh = 0.5
-        self.prune_thresh = 0.5
+        self.split_thresh = 0.2
+        self.clone_thresh = 0.2
+        self.prune_thresh = 0.9
 
         self.split_pts_num = 0
         self.clone_pts_num = 0
@@ -374,12 +375,10 @@ class MashGS(object):
 
         self.mash.anchor_num = optimizable_tensors["positions"].shape[0]
         self.mash.reset()
-        self.mash.loadParams(
-            optimizable_tensors["mask_params"],
-            optimizable_tensors["sh_params"],
-            optimizable_tensors["rotate_vectors"],
-            optimizable_tensors["positions"]
-        )
+        self.mash.mask_params = optimizable_tensors["mask_params"]
+        self.mash.sh_params = optimizable_tensors["sh_params"]
+        self.mash.rotate_vectors = optimizable_tensors["rotate_vectors"]
+        self.mash.positions = optimizable_tensors["positions"]
         self.updateGSParams()
 
         self._features_dc = optimizable_tensors["f_dc"]
@@ -425,12 +424,10 @@ class MashGS(object):
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self.mash.anchor_num = optimizable_tensors["positions"].shape[0]
         self.mash.reset()
-        self.mash.loadParams(
-            optimizable_tensors["mask_params"],
-            optimizable_tensors["sh_params"],
-            optimizable_tensors["rotate_vectors"],
-            optimizable_tensors["positions"]
-        )
+        self.mash.mask_params = optimizable_tensors["mask_params"]
+        self.mash.sh_params = optimizable_tensors["sh_params"]
+        self.mash.rotate_vectors = optimizable_tensors["rotate_vectors"]
+        self.mash.positions = optimizable_tensors["positions"]
         self.updateGSParams()
 
         self._features_dc = optimizable_tensors["f_dc"]
@@ -481,6 +478,8 @@ class MashGS(object):
             samples = 0.0
         else:
             samples = torch.vstack(anchor_delta_xyzs).reshape(-1, 3)
+
+        samples = samples * self.split_dist_weight
 
         new_mask_params = self.mash.mask_params[selected_anchor_mask].repeat(N,1) / (0.8*N)
         new_sh_params = self.mash.sh_params[selected_anchor_mask].repeat(N,1)
