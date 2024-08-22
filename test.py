@@ -3,7 +3,6 @@ import torch
 import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm import trange
 from math import tan, atan
 
 def build_rotation(r):
@@ -111,7 +110,7 @@ def setup(means3D, scales, quats, opacities, colors, viewmat, projmat):
     center = point_image
 
     # 3. Perform Sorting
-    depth = p_view[..., 2] # depth is used only for sorting
+    depth = p_view[:, 2] # depth is used only for sorting
     index = depth.sort()[1]
     T = T[index]
     colors = colors[index]
@@ -121,7 +120,7 @@ def setup(means3D, scales, quats, opacities, colors, viewmat, projmat):
     opacities = opacities[index]
     return T, colors, opacities, center, depth, radii
 
-def surface_splatting(means3D, scales, quats, colors, opacities, intrins, viewmat, projmat):
+def surface_splatting(means3D, scales, quats, colors, opacities, intrins, viewmat):
     # Rasterization setup
     projmat = torch.zeros(4,4).cuda()
     projmat[:3,:3] = intrins
@@ -139,8 +138,8 @@ def surface_splatting(means3D, scales, quats, colors, opacities, intrins, viewma
     # 2. Compute ray splat intersection # Eq.9 and Eq.10
     x = pix.reshape(-1,1,2)[..., :1]
     y = pix.reshape(-1,1,2)[..., 1:]
-    k = -T[None][..., 0] + x * T[None][..., 3]
-    l = -T[None][..., 1] + y * T[None][..., 3]
+    k = -T[:, :, 0] + x * T[:, :, 3]
+    l = -T[:, :, 1] + y * T[:, :, 3]
     points = torch.cross(k, l, dim=-1)
     s = points[..., :2] / points[..., -1:]
 
@@ -204,7 +203,7 @@ def get_radius(cov2d):
     lambda2 = mid - torch.sqrt((mid**2-det).clip(min=0.1))
     return 3.0 * torch.sqrt(torch.max(lambda1, lambda2)).ceil()
 
-def volume_splatting(means3D, scales, quats, colors, opacities, intrins, viewmat, projmat):
+def volume_splatting(means3D, scales, quats, colors, opacities, intrins, viewmat):
     projmat = torch.zeros(4,4).cuda()
     projmat[:3,:3] = intrins
     projmat[-1,-2] = 1.0
@@ -270,22 +269,24 @@ def get_inputs(num_points=8):
     x = np.linspace(-1, 1, num_points) * length
     y = np.linspace(-1, 1, num_points) * length
     x, y = np.meshgrid(x, y)
-    means3D = torch.from_numpy(np.stack([x,y, 0 * np.random.rand(*x.shape)], axis=-1).reshape(-1,3)).cuda().float()
+    means3D = torch.from_numpy(np.stack([x,y, np.zeros_like(x)], axis=-1).reshape(-1,3)).cuda().float()
     quats = torch.zeros(1,4).repeat(len(means3D), 1).cuda()
-    quats[..., 0] = 1.
+    quats[:, 0] = 1.
     scale = length /(num_points-1)
-    scales = torch.zeros(1,3).repeat(len(means3D), 1).fill_(scale).cuda()
+    scales = torch.ones_like(means3D).cuda() * scale
     return means3D, scales, quats
 
 def get_cameras():
-    intrins = torch.tensor([[711.1111,   0.0000, 256.0000,   0.0000],
-               [  0.0000, 711.1111, 256.0000,   0.0000],
-               [  0.0000,   0.0000,   1.0000,   0.0000],
-               [  0.0000,   0.0000,   0.0000,   1.0000]]).cuda()
-    c2w = torch.tensor([[-8.6086e-01,  3.7950e-01, -3.3896e-01,  6.7791e-01],
-         [ 5.0884e-01,  6.4205e-01, -5.7346e-01,  1.1469e+00],
-         [ 1.0934e-08, -6.6614e-01, -7.4583e-01,  1.4917e+00],
-         [ 0.0000e+00,  0.0000e+00,  0.0000e+00,  1.0000e+00]]).cuda()
+    intrins = torch.tensor([
+        [711.1111,   0.0000, 256.0000,   0.0000],
+        [  0.0000, 711.1111, 256.0000,   0.0000],
+        [  0.0000,   0.0000,   1.0000,   0.0000],
+        [  0.0000,   0.0000,   0.0000,   1.0000]]).cuda()
+    c2w = torch.tensor([
+        [-8.6086e-01,  3.7950e-01, -3.3896e-01,  6.7791e-01],
+        [ 5.0884e-01,  6.4205e-01, -5.7346e-01,  1.1469e+00],
+        [ 1.0934e-08, -6.6614e-01, -7.4583e-01,  1.4917e+00],
+        [ 0.0000e+00,  0.0000e+00,  0.0000e+00,  1.0000e+00]]).cuda()
 
     width, height = 512, 512
     focal_x, focal_y = intrins[0, 0], intrins[1, 1]
@@ -297,18 +298,16 @@ def get_cameras():
     return intrins, viewmat, projmat, height, width
 
 # Make inputs
-num_points1=4
+num_points1=2
 means3D, scales, quats = get_inputs(num_points=num_points1)
 intrins, viewmat, projmat, height, width = get_cameras()
 intrins = intrins[:3,:3]
-colors = matplotlib.colormaps['Accent'](np.random.randint(1, num_points1 ** 2, num_points1 ** 2)/(num_points1 ** 2))[..., :3]
+colors = matplotlib.colormaps['Accent']((np.random.randint(1, num_points1 ** 2, num_points1 ** 2)/(num_points1 ** 2)).astype(float))[..., :3]
 colors = torch.from_numpy(colors).cuda()
 
 opacity = torch.ones_like(means3D[:,:1])
-for _ in trange(10):
-    image1, depthmap1, center1, radii1, dist1 = surface_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat, projmat)
-for _ in trange(10):
-    image2, depthmap2, center2, radii2, dist2 = volume_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat, projmat)
+image1, depthmap1, center1, radii1, dist1 = surface_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat)
+image2, depthmap2, center2, radii2, dist2 = volume_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat)
 
 # Visualize 3DGS and 2DGS
 fig1, (ax1,ax2) = plt.subplots(1,2)
