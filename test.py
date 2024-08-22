@@ -1,7 +1,9 @@
+import cv2
 import torch
 import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
+from tqdm import trange
 from math import tan, atan
 
 def build_rotation(r):
@@ -295,20 +297,21 @@ def get_cameras():
     return intrins, viewmat, projmat, height, width
 
 # Make inputs
-num_points1=8
+num_points1=4
 means3D, scales, quats = get_inputs(num_points=num_points1)
 intrins, viewmat, projmat, height, width = get_cameras()
 intrins = intrins[:3,:3]
-colors = matplotlib.colormaps['Accent'](np.random.randint(1,64, 64)/64)[..., :3]
+colors = matplotlib.colormaps['Accent'](np.random.randint(1, num_points1 ** 2, num_points1 ** 2)/(num_points1 ** 2))[..., :3]
 colors = torch.from_numpy(colors).cuda()
 
 opacity = torch.ones_like(means3D[:,:1])
-image1, depthmap1, center1, radii1, dist1 = surface_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat, projmat)
-image2, depthmap2, center2, radii2, dist2 = volume_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat, projmat)
+for _ in trange(10):
+    image1, depthmap1, center1, radii1, dist1 = surface_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat, projmat)
+for _ in trange(10):
+    image2, depthmap2, center2, radii2, dist2 = volume_splatting(means3D, scales, quats, colors, opacity, intrins, viewmat, projmat)
 
 # Visualize 3DGS and 2DGS
 fig1, (ax1,ax2) = plt.subplots(1,2)
-fig2, (ax3,ax4) = plt.subplots(1,2)
 
 from matplotlib.patches import Rectangle
 point_image = center1.cpu().detach().numpy()
@@ -322,30 +325,24 @@ ax1.set_title('2D Gaussian splatting - color')
 ax2.set_aspect('equal')
 ax2.set_axis_off()
 ax2.set_title('3D Gaussian splatting - color')
-ax1.set_aspect('equal')
-ax1.set_axis_off()
 
-ax3.set_title('2D Gaussian splatting - depth')
-ax3.set_axis_off()
-ax3.set_aspect('equal')
-ax4.set_axis_off()
-ax4.set_title('3D Gaussian splatting - depth')
 fig1.tight_layout()
-fig2.tight_layout()
-# visualize AABB
 for k in range(len(half_extend)):
     ax1.add_patch(Rectangle(lb[k], hw[k, 0], hw[k, 1], facecolor='none', edgecolor='white'))
-    # ax3.add_patch(Rectangle(lb[k], hw[k, 0], hw[k, 1], facecolor='none', edgecolor='white'))
 
 img1 = image1.cpu().numpy()
 img2 = image2.cpu().numpy()
-ax1.imshow(img1)
-ax2.imshow(img2)
+
+save_img1 = (img1 * 255.0).astype(np.uint8)
+save_img2 = (img2 * 255.0).astype(np.uint8)
+
+cv2.imwrite("./output/surface_splatting_rgb.png", save_img1)
+cv2.imwrite("./output/volume_splatting_rgb.png", save_img2)
 
 img1 = depthmap1.cpu().numpy()
 img2 = depthmap2.cpu().numpy()
 
-ax3.imshow(img1)
-ax4.imshow(img2)
+ax1.imshow(img1)
+ax2.imshow(img2)
 
-plt.savefig('test1.png', transparent=True, dpi=300)
+plt.savefig('./output/depth.png', transparent=True, dpi=300)
