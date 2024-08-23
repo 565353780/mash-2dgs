@@ -3,8 +3,10 @@ import torch
 from ma_sh.Module.trainer import Trainer
 
 class MashRefiner(object):
-    def __init__(self) -> None:
-        self.anchor_num = 200
+    def __init__(self,
+                 anchor_num: int = 400,
+                 ) -> None:
+        self.anchor_num = anchor_num
         self.mask_degree_max = 3
         self.sh_degree_max = 2
         self.mask_boundary_sample_num = 90
@@ -22,7 +24,7 @@ class MashRefiner(object):
         self.factor = 0.8
         self.patience = 2
 
-        self.render = False 
+        self.render = False
         self.render_freq = 1
         self.render_init_only = False
 
