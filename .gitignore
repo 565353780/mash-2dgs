@@ -1,12 +1,17 @@
+# compiled
+__pycache__
+build
+
+# output
+logs
+output
+
 *.pyc
 .vscode
-output
-build
 data
 *.ply
 **/PKG-INFO
 # submodules
-**__pycache__**
 *.png
 *.out
 eval

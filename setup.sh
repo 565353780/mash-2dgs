@@ -1,7 +1,7 @@
 cd ..
-git clone https://github.com/565353780/ma-sh.git
+git clone https://github.com/565353780/ma-sh.git mash
 
-cd ma-sh
+cd mash
 ./compile.sh
 
 pip install -U torch torchvision torchaudio
