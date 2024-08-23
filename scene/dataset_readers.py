@@ -18,6 +18,7 @@ from scene.colmap_loader import CAMERA_MODEL_NAMES, read_extrinsics_text, read_i
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
 import json
+from tqdm import tqdm
 from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
@@ -184,7 +185,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         fovx = contents["camera_angle_x"]
 
         frames = contents["frames"]
-        for idx, frame in enumerate(frames):
+        for idx, frame in enumerate(tqdm(frames)):
             cam_name = os.path.join(path, frame["file_path"])
             if extension not in cam_name:
                 cam_name += extension
@@ -208,7 +209,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
 
             norm_data = im_data / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+            norm_rgb_data = norm_data[:, :, :3]
+            norm_alpha_data = norm_data[:, :, 3:4]
+            arr = norm_rgb_data * norm_alpha_data + bg * (1 - norm_alpha_data)
             image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
 
             fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
@@ -217,7 +220,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
-            
+
     return cam_infos
 
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
