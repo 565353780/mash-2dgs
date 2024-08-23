@@ -1,7 +1,7 @@
 import os
-from typing import Tuple
 import torch
-from tqdm import tqdm
+from tqdm import trange
+from typing import Tuple
 from random import randint
 
 from scene import Scene, GaussianModel
@@ -22,8 +22,10 @@ class JointTrainer(object):
         self.save_result_folder_path = "auto"
         self.save_log_folder_path = "auto"
 
-        self.test_iterations = list(range(0, 30001, 5000))
-        self.save_iterations = list(range(0, 30001, 5000))
+        iterations = 30000
+
+        self.test_iterations = list(range(0, iterations + 1, 5000))
+        self.save_iterations = list(range(0, iterations + 1, 5000))
 
         quiet = False
         ip = "127.0.0.1"
@@ -40,6 +42,7 @@ class JointTrainer(object):
         pp = PipelineParams(parser)
         args = parser.parse_args()
 
+        args.iterations = iterations
         args.source_path = source_path
         args.images = images
         args.resolution = resolution
@@ -85,8 +88,8 @@ class JointTrainer(object):
             self.logger.setLogFolder(self.save_log_folder_path)
         return True
 
-    def renderImage(self, viewpoint_cam) -> dict:
-        return render(viewpoint_cam, self.gaussians, self.pipe, self.background)
+    def renderImage(self, viewpoint_cam, scaling_modifer: float = 1.0) -> dict:
+        return render(viewpoint_cam, self.gaussians, self.pipe, self.background, scaling_modifer)
 
     def trainStep(self, iteration: int, viewpoint_cam) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
@@ -124,6 +127,9 @@ class JointTrainer(object):
 
         total_loss.backward()
 
+        self.gaussians.optimizer.step()
+        self.gaussians.optimizer.zero_grad(set_to_none = True)
+
         loss_dict = {
             'reg': reg_loss.item(),
             'ssim': ssim_loss.item(),
@@ -156,7 +162,6 @@ class JointTrainer(object):
         self.logger.addScalar('Loss/total', total_loss, iteration)
 
         self.logger.addScalar('Gaussian/total_points', self.scene.gaussians.get_xyz.shape[0], iteration)
-
         self.logger.addScalar('Gaussian/scale', torch.mean(self.gaussians.get_scaling).detach().clone().cpu().numpy(), iteration)
         self.logger.addScalar('Gaussian/opacity', torch.mean(self.gaussians.get_opacity).detach().clone().cpu().numpy(), iteration)
         self.logger.addScalar('Gaussian/split_num', self.gaussians.split_pts_num, iteration)
@@ -209,18 +214,63 @@ class JointTrainer(object):
                     psnr_test /= len(config['cameras'])
                     l1_test /= len(config['cameras'])
                     print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                    if self.logger:
-                        self.logger.addScalar('Val/l1', l1_test, iteration)
-                        self.logger.addScalar('Val/psnr', psnr_test, iteration)
+                    self.logger.addScalar('Val/l1', l1_test, iteration)
+                    self.logger.addScalar('Val/psnr', psnr_test, iteration)
 
             torch.cuda.empty_cache()
         return True
 
+    def recordGrads(self, render_pkg: dict) -> bool:
+        viewspace_point_tensor, visibility_filter, radii = render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+        self.gaussians.max_radii2D[visibility_filter] = torch.max(self.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+        self.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+        return True
+
+    def densifyStep(self) -> bool:
+        size_threshold = 20
+        self.gaussians.densify_and_prune(self.opt.densify_grad_threshold, self.opt.opacity_cull, self.scene.cameras_extent, size_threshold)
+        return True
+
+    def resetOpacity(self) -> bool:
+        self.gaussians.reset_opacity()
+        return True
+
+    def saveScene(self, iteration: int) -> bool:
+        self.scene.save(iteration)
+        return True
+
+    @torch.no_grad
+    def renderForViewer(self, iteration: int, loss_dict: dict) -> bool:
+        if network_gui.conn == None:
+            network_gui.try_connect(self.dataset.render_items)
+        while network_gui.conn != None:
+            try:
+                net_image_bytes = None
+                custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
+                if custom_cam != None:
+                    render_pkg = self.renderImage(custom_cam, scaling_modifer)
+                    net_image = render_net_image(render_pkg, self.dataset.render_items, render_mode, custom_cam)
+                    net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
+                metrics_dict = {
+                    "#": self.gaussians.get_opacity.shape[0],
+                    "loss": loss_dict['rgb']
+                    # Add more metrics as needed
+                }
+                # Send the data
+                network_gui.send(net_image_bytes, self.dataset.source_path, metrics_dict)
+                if do_training and ((iteration < int(self.opt.iterations)) or not keep_alive):
+                    break
+            except Exception as e:
+                # raise e
+                network_gui.conn = None
+
+        return True
+
     def train(self):
         viewpoint_stack = None
-        ema_loss_for_log = 0.0
 
-        progress_bar = tqdm(range(self.opt.iterations), desc="Training progress")
+        progress_bar = trange(self.opt.iterations, desc="Training progress")
         for iteration in range(1, self.opt.iterations + 1):
 
             # Pick a random Camera
@@ -230,70 +280,32 @@ class JointTrainer(object):
 
             render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
 
-            viewspace_point_tensor, visibility_filter, radii = render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-
-            rgb_loss = loss_dict['rgb']
-            dist_loss = loss_dict['dist']
-            normal_loss = loss_dict['normal']
-
             if iteration % 10 == 0:
                 bar_loss_dict = {
-                    "rgb": f"{rgb_loss:.{5}f}",
-                    "distort": f"{dist_loss:.{5}f}",
-                    "normal": f"{normal_loss:.{5}f}",
+                    "rgb": f"{loss_dict['rgb']:.{5}f}",
+                    "distort": f"{loss_dict['dist']:.{5}f}",
+                    "normal": f"{loss_dict['normal']:.{5}f}",
                     "Points": f"{len(self.gaussians.get_xyz)}"
                 }
                 progress_bar.set_postfix(bar_loss_dict)
-
                 progress_bar.update(10)
-            if iteration == self.opt.iterations:
-                progress_bar.close()
 
             self.logStep(iteration, loss_dict)
 
-            with torch.no_grad():
-                if (iteration in self.save_iterations):
-                    print("\n[ITER {}] Saving Gaussians".format(iteration))
-                    self.scene.save(iteration)
+            if (iteration in self.save_iterations):
+                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                self.saveScene(iteration)
 
-                # Densification
-                if iteration < self.opt.densify_until_iter:
-                    self.gaussians.max_radii2D[visibility_filter] = torch.max(self.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                    self.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            # Densification
+            if iteration < self.opt.densify_until_iter:
+                self.recordGrads(render_pkg)
+                if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
+                    self.densifyStep()
 
-                    if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
-                        size_threshold = 20 if iteration > self.opt.opacity_reset_interval else None
-                        self.gaussians.densify_and_prune(self.opt.densify_grad_threshold, self.opt.opacity_cull, self.scene.cameras_extent, size_threshold)
+                if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
+                    self.resetOpacity()
 
-                    if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
-                        self.gaussians.reset_opacity()
+            self.renderForViewer(iteration, loss_dict)
 
-                # Optimizer step
-                if iteration < self.opt.iterations:
-                    self.gaussians.optimizer.step()
-                    self.gaussians.optimizer.zero_grad(set_to_none = True)
-
-            with torch.no_grad():
-                if network_gui.conn == None:
-                    network_gui.try_connect(self.dataset.render_items)
-                while network_gui.conn != None:
-                    try:
-                        net_image_bytes = None
-                        custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
-                        if custom_cam != None:
-                            render_pkg = render(custom_cam, self.gaussians, self.pipe, self.background, scaling_modifer)
-                            net_image = render_net_image(render_pkg, self.dataset.render_items, render_mode, custom_cam)
-                            net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                        metrics_dict = {
-                            "#": self.gaussians.get_opacity.shape[0],
-                            "loss": ema_loss_for_log
-                            # Add more metrics as needed
-                        }
-                        # Send the data
-                        network_gui.send(net_image_bytes, self.dataset.source_path, metrics_dict)
-                        if do_training and ((iteration < int(self.opt.iterations)) or not keep_alive):
-                            break
-                    except Exception as e:
-                        # raise e
-                        network_gui.conn = None
+        progress_bar.close()
         return True
