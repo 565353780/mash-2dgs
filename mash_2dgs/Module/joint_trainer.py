@@ -1,4 +1,5 @@
 import os
+from typing import Tuple
 import torch
 from tqdm import tqdm
 from random import randint
@@ -84,100 +85,173 @@ class JointTrainer(object):
             self.logger.setLogFolder(self.save_log_folder_path)
         return True
 
-    def trainStep(self) -> bool:
+    def renderImage(self, viewpoint_cam) -> dict:
+        return render(viewpoint_cam, self.gaussians, self.pipe, self.background)
+
+    def trainStep(self, iteration: int, viewpoint_cam) -> Tuple[dict, dict]:
+        self.gaussians.update_learning_rate(iteration)
+
+        # Every 1000 its we increase the levels of SH up to a maximum degree
+        if iteration % 1000 == 0:
+            self.gaussians.oneupSHdegree()
+
+        render_pkg = self.renderImage(viewpoint_cam)
+        image = render_pkg["render"]
+
+        gt_image = viewpoint_cam.original_image.cuda()
+        reg_loss = l1_loss(image, gt_image)
+        ssim_loss = 1.0 - ssim(image, gt_image)
+        rgb_loss = (1.0 - self.opt.lambda_dssim) * reg_loss + self.opt.lambda_dssim * ssim_loss
+
+        # regularization
+        lambda_normal = self.opt.lambda_normal if iteration > 7000 else 0.0
+        lambda_dist = self.opt.lambda_dist if iteration > 3000 else 0.0
+
+        rend_dist = render_pkg["rend_dist"]
+        rend_normal  = render_pkg['rend_normal']
+        surf_normal = render_pkg['surf_normal']
+        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+        normal_loss = lambda_normal * (normal_error).mean()
+        dist_loss = lambda_dist * (rend_dist).mean()
+
+        if iteration > self.opt.densify_until_iter:
+            opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
+        else:
+            opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
+
+        # loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss
+
+        total_loss.backward()
+
+        loss_dict = {
+            'reg': reg_loss.item(),
+            'ssim': ssim_loss.item(),
+            'rgb': rgb_loss.item(),
+            'dist': dist_loss.item(),
+            'normal': normal_loss.item(),
+            'opacity': opacity_loss.item(),
+            'total': total_loss.item(),
+        }
+
+        return render_pkg, loss_dict
+
+    @torch.no_grad
+    def logStep(self, iteration: int, loss_dict: dict) -> bool:
+        reg_loss = loss_dict['reg']
+        ssim_loss = loss_dict['ssim']
+        rgb_loss = loss_dict['rgb']
+        dist_loss = loss_dict['dist']
+        normal_loss = loss_dict['normal']
+        opacity_loss = loss_dict['opacity']
+        total_loss = loss_dict['total']
+
+        # Log and save
+        self.logger.addScalar('Loss/reg', reg_loss, iteration)
+        self.logger.addScalar('Loss/ssim', ssim_loss, iteration)
+        self.logger.addScalar('Loss/rgb', rgb_loss, iteration)
+        self.logger.addScalar('Loss/dist', dist_loss, iteration)
+        self.logger.addScalar('Loss/normal', normal_loss, iteration)
+        self.logger.addScalar('Loss/opacity', opacity_loss, iteration)
+        self.logger.addScalar('Loss/total', total_loss, iteration)
+
+        self.logger.addScalar('Gaussian/total_points', self.scene.gaussians.get_xyz.shape[0], iteration)
+
+        self.logger.addScalar('Gaussian/scale', torch.mean(self.gaussians.get_scaling).detach().clone().cpu().numpy(), iteration)
+        self.logger.addScalar('Gaussian/opacity', torch.mean(self.gaussians.get_opacity).detach().clone().cpu().numpy(), iteration)
+        self.logger.addScalar('Gaussian/split_num', self.gaussians.split_pts_num, iteration)
+        self.logger.addScalar('Gaussian/clone_num', self.gaussians.clone_pts_num, iteration)
+        self.logger.addScalar('Gaussian/prune_num', self.gaussians.prune_pts_num, iteration)
+
+        # Report test and samples of training set
+        if iteration in self.test_iterations:
+            torch.cuda.empty_cache()
+            validation_configs = ({'name': 'test', 'cameras' : self.scene.getTestCameras()}, 
+                                {'name': 'train', 'cameras' : [self.scene.getTrainCameras()[idx % len(self.scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+
+            for config in validation_configs:
+                if config['cameras'] and len(config['cameras']) > 0:
+                    l1_test = 0.0
+                    psnr_test = 0.0
+                    for idx, viewpoint in enumerate(config['cameras']):
+                        render_pkg = self.renderImage(viewpoint)
+                        image = torch.clamp(render_pkg["render"], 0.0, 1.0)
+                        gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                        if self.logger.isValid() and (idx < 5):
+                            from utils.general_utils import colormap
+                            depth = render_pkg["surf_depth"]
+                            norm = depth.max()
+                            depth = depth / norm
+                            depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
+                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
+                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+
+                            try:
+                                rend_alpha = render_pkg['rend_alpha']
+                                rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
+                                surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
+                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
+                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
+                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
+
+                                rend_dist = render_pkg["rend_dist"]
+                                rend_dist = colormap(rend_dist.cpu().numpy()[0])
+                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
+                            except:
+                                pass
+
+                            if iteration == self.test_iterations[0]:
+                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+
+                        l1_test += l1_loss(image, gt_image).mean().double()
+                        psnr_test += psnr(image, gt_image).mean().double()
+
+                    psnr_test /= len(config['cameras'])
+                    l1_test /= len(config['cameras'])
+                    print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                    if self.logger:
+                        self.logger.addScalar('Val/l1', l1_test, iteration)
+                        self.logger.addScalar('Val/psnr', psnr_test, iteration)
+
+            torch.cuda.empty_cache()
         return True
 
     def train(self):
-        first_iter = 0
-
-        iter_start = torch.cuda.Event(enable_timing = True)
-        iter_end = torch.cuda.Event(enable_timing = True)
-
         viewpoint_stack = None
         ema_loss_for_log = 0.0
-        ema_dist_for_log = 0.0
-        ema_normal_for_log = 0.0
 
-        progress_bar = tqdm(range(first_iter, self.opt.iterations), desc="Training progress")
-        first_iter += 1
-        for iteration in range(first_iter, self.opt.iterations + 1):
-
-            iter_start.record()
-
-            self.gaussians.update_learning_rate(iteration)
-
-            # Every 1000 its we increase the levels of SH up to a maximum degree
-            if iteration % 1000 == 0:
-                self.gaussians.oneupSHdegree()
+        progress_bar = tqdm(range(self.opt.iterations), desc="Training progress")
+        for iteration in range(1, self.opt.iterations + 1):
 
             # Pick a random Camera
             if not viewpoint_stack:
                 viewpoint_stack = self.scene.getTrainCameras().copy()
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
-            render_pkg = render(viewpoint_cam, self.gaussians, self.pipe, self.background)
-            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
 
-            gt_image = viewpoint_cam.original_image.cuda()
-            Ll1 = l1_loss(image, gt_image)
-            loss = (1.0 - self.opt.lambda_dssim) * Ll1 + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            viewspace_point_tensor, visibility_filter, radii = render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
-            # regularization
-            lambda_normal = self.opt.lambda_normal if iteration > 7000 else 0.0
-            lambda_dist = self.opt.lambda_dist if iteration > 3000 else 0.0
-            # lambda_normal = opt.lambda_normal
-            # lambda_dist = opt.lambda_dist
+            rgb_loss = loss_dict['rgb']
+            dist_loss = loss_dict['dist']
+            normal_loss = loss_dict['normal']
 
-            rend_dist = render_pkg["rend_dist"]
-            rend_normal  = render_pkg['rend_normal']
-            surf_normal = render_pkg['surf_normal']
-            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-            normal_loss = lambda_normal * (normal_error).mean()
-            dist_loss = lambda_dist * (rend_dist).mean()
+            if iteration % 10 == 0:
+                bar_loss_dict = {
+                    "rgb": f"{rgb_loss:.{5}f}",
+                    "distort": f"{dist_loss:.{5}f}",
+                    "normal": f"{normal_loss:.{5}f}",
+                    "Points": f"{len(self.gaussians.get_xyz)}"
+                }
+                progress_bar.set_postfix(bar_loss_dict)
 
-            if iteration > self.opt.densify_until_iter:
-                opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
-            else:
-                opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
+                progress_bar.update(10)
+            if iteration == self.opt.iterations:
+                progress_bar.close()
 
-            # loss
-            total_loss = loss + dist_loss + normal_loss + opacity_loss
-
-            total_loss.backward()
-
-            iter_end.record()
+            self.logStep(iteration, loss_dict)
 
             with torch.no_grad():
-                # Progress bar
-                ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-                ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
-                ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
-
-
-                if iteration % 10 == 0:
-                    loss_dict = {
-                        "Loss": f"{ema_loss_for_log:.{5}f}",
-                        "distort": f"{ema_dist_for_log:.{5}f}",
-                        "normal": f"{ema_normal_for_log:.{5}f}",
-                        "Points": f"{len(self.gaussians.get_xyz)}"
-                    }
-                    progress_bar.set_postfix(loss_dict)
-
-                    progress_bar.update(10)
-                if iteration == self.opt.iterations:
-                    progress_bar.close()
-
-                # Log and save
-                self.logger.addScalar('Loss/dist', ema_dist_for_log, iteration)
-                self.logger.addScalar('Loss/normal', ema_normal_for_log, iteration)
-
-                self.logger.addScalar('Gaussian/scale', torch.mean(self.gaussians.get_scaling).detach().clone().cpu().numpy(), iteration)
-                self.logger.addScalar('Gaussian/opacity', torch.mean(self.gaussians.get_opacity).detach().clone().cpu().numpy(), iteration)
-                self.logger.addScalar('Gaussian/split_num', self.gaussians.split_pts_num, iteration)
-                self.logger.addScalar('Gaussian/clone_num', self.gaussians.clone_pts_num, iteration)
-                self.logger.addScalar('Gaussian/prune_num', self.gaussians.prune_pts_num, iteration)
-
-                self.training_report(iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), render)
                 if (iteration in self.save_iterations):
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
                     self.scene.save(iteration)
@@ -222,64 +296,4 @@ class JointTrainer(object):
                     except Exception as e:
                         # raise e
                         network_gui.conn = None
-        return True
-
-    @torch.no_grad()
-    def training_report(self, iteration, Ll1, loss, l1_loss, elapsed, renderFunc):
-        self.logger.addScalar('Loss/reg', Ll1.item(), iteration)
-        self.logger.addScalar('Loss/total', loss.item(), iteration)
-        self.logger.addScalar('Gaussian/iter_time', elapsed, iteration)
-        self.logger.addScalar('Gaussian/total_points', self.scene.gaussians.get_xyz.shape[0], iteration)
-
-        # Report test and samples of training set
-        if iteration in self.test_iterations:
-            torch.cuda.empty_cache()
-            validation_configs = ({'name': 'test', 'cameras' : self.scene.getTestCameras()}, 
-                                {'name': 'train', 'cameras' : [self.scene.getTrainCameras()[idx % len(self.scene.getTrainCameras())] for idx in range(5, 30, 5)]})
-
-            for config in validation_configs:
-                if config['cameras'] and len(config['cameras']) > 0:
-                    l1_test = 0.0
-                    psnr_test = 0.0
-                    for idx, viewpoint in enumerate(config['cameras']):
-                        render_pkg = renderFunc(viewpoint, self.scene.gaussians, self.pipe, self.background)
-                        image = torch.clamp(render_pkg["render"], 0.0, 1.0)
-                        gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                        if self.logger.isValid() and (idx < 5):
-                            from utils.general_utils import colormap
-                            depth = render_pkg["surf_depth"]
-                            norm = depth.max()
-                            depth = depth / norm
-                            depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
-                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
-                            self.logger.summary_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-
-                            try:
-                                rend_alpha = render_pkg['rend_alpha']
-                                rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
-                                surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
-
-                                rend_dist = render_pkg["rend_dist"]
-                                rend_dist = colormap(rend_dist.cpu().numpy()[0])
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
-                            except:
-                                pass
-
-                            if iteration == self.test_iterations[0]:
-                                self.logger.summary_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-
-                        l1_test += l1_loss(image, gt_image).mean().double()
-                        psnr_test += psnr(image, gt_image).mean().double()
-
-                    psnr_test /= len(config['cameras'])
-                    l1_test /= len(config['cameras'])
-                    print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                    if self.logger:
-                        self.logger.addScalar('Val/l1', l1_test, iteration)
-                        self.logger.addScalar('Val/psnr', psnr_test, iteration)
-
-            torch.cuda.empty_cache()
         return True
