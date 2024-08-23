@@ -1,6 +1,6 @@
 import os
 import torch
-from tqdm import trange
+from tqdm import tqdm
 from typing import Tuple
 from random import randint
 
@@ -18,23 +18,21 @@ from mash_2dgs.Module.logger import Logger
 
 class Trainer(object):
     def __init__(self,
+                 source_path: str,
                  ) -> None:
         self.logger = Logger()
         self.save_result_folder_path = "auto"
         self.save_log_folder_path = "auto"
         self.initRecords()
 
-        iterations = 30000
-
-        self.test_iterations = list(range(0, iterations + 1, 5000))
-        self.save_iterations = list(range(0, iterations + 1, 5000))
+        self.test_freq = 5000
+        self.save_freq = 5000
 
         quiet = False
         ip = "127.0.0.1"
         port = 6009
 
-        source_path = '/home/chli/Dataset/BlenderNeRF/bunny/'
-        images = 'train'
+        images = 'images'
         resolution = 2
 
         # Set up command line argument parser
@@ -44,7 +42,6 @@ class Trainer(object):
         pp = PipelineParams(parser)
         args = parser.parse_args()
 
-        args.iterations = iterations
         args.source_path = source_path
         args.images = images
         args.resolution = resolution
@@ -164,7 +161,7 @@ class Trainer(object):
         self.logger.addScalar('Gaussian/prune_num', self.gaussians.prune_pts_num, iteration)
 
         # Report test and samples of training set
-        if iteration in self.test_iterations:
+        if iteration % self.test_freq == 0:
             torch.cuda.empty_cache()
             validation_configs = ({'name': 'test', 'cameras' : self.scene.getTestCameras()}, 
                                 {'name': 'train', 'cameras' : [self.scene.getTrainCameras()[idx % len(self.scene.getTrainCameras())] for idx in range(5, 30, 5)]})
@@ -200,7 +197,7 @@ class Trainer(object):
                             except:
                                 pass
 
-                            if iteration == self.test_iterations[0]:
+                            if iteration == 1:
                                 self.logger.summary_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
 
                         l1_test += l1_loss(image, gt_image).mean().double()
@@ -270,8 +267,10 @@ class Trainer(object):
     def train(self):
         viewpoint_stack = None
 
-        progress_bar = trange(self.opt.iterations, desc="Training progress")
-        for iteration in range(1, self.opt.iterations + 1):
+        progress_bar = tqdm(desc="Training progress")
+        iteration = 0
+        while True:
+            iteration += 1
 
             # Pick a random Camera
             if not viewpoint_stack:
@@ -292,7 +291,7 @@ class Trainer(object):
 
             self.logStep(iteration, loss_dict)
 
-            if (iteration in self.save_iterations):
+            if iteration % self.save_freq == 0:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 self.saveScene(iteration)
 
@@ -308,6 +307,4 @@ class Trainer(object):
             self.updateGSParams()
 
             self.renderForViewer(iteration, loss_dict)
-
-        progress_bar.close()
         return True
