@@ -9,7 +9,7 @@ from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 from utils.image_utils import psnr, render_net_image
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
 
@@ -19,6 +19,7 @@ from mash_2dgs.Module.logger import Logger
 class Trainer(object):
     def __init__(self,
                  source_path: str,
+                 op_func= OptimizationParams,
                  ) -> None:
         self.logger = Logger()
         self.save_result_folder_path = "auto"
@@ -38,7 +39,7 @@ class Trainer(object):
         # Set up command line argument parser
         parser = ArgumentParser(description="Training script parameters")
         lp = ModelParams(parser)
-        op = OptimizationParams(parser)
+        op = op_func(parser)
         pp = PipelineParams(parser)
         args = parser.parse_args()
 
@@ -48,6 +49,8 @@ class Trainer(object):
         args.model_path = self.save_result_folder_path
 
         print("Optimizing " + args.model_path)
+        with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
+            cfg_log_f.write(str(Namespace(**vars(args))))
 
         self.dataset = lp.extract(args)
         self.opt = op.extract(args)
@@ -74,7 +77,7 @@ class Trainer(object):
         if self.save_result_folder_path == "auto":
             self.save_result_folder_path = "./output/" + current_time + "/"
         if self.save_log_folder_path == "auto":
-            self.save_log_folder_path = "./logs/" + current_time + "/"
+            self.save_log_folder_path = "./output/" + current_time + "/"
 
         if self.save_result_folder_path is not None:
             os.makedirs(self.save_result_folder_path, exist_ok=True)
@@ -256,7 +259,7 @@ class Trainer(object):
                 }
                 # Send the data
                 network_gui.send(net_image_bytes, self.dataset.source_path, metrics_dict)
-                if do_training and ((iteration < int(self.opt.iterations)) or not keep_alive):
+                if do_training or not keep_alive:
                     break
             except Exception as e:
                 # raise e
