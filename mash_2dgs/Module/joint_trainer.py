@@ -127,9 +127,6 @@ class JointTrainer(object):
 
         total_loss.backward()
 
-        self.gaussians.optimizer.step()
-        self.gaussians.optimizer.zero_grad(set_to_none = True)
-
         loss_dict = {
             'reg': reg_loss.item(),
             'ssim': ssim_loss.item(),
@@ -236,6 +233,11 @@ class JointTrainer(object):
         self.gaussians.reset_opacity()
         return True
 
+    def updateGSParams(self) -> bool:
+        self.gaussians.optimizer.step()
+        self.gaussians.optimizer.zero_grad(set_to_none = True)
+        return True
+
     def saveScene(self, iteration: int) -> bool:
         self.scene.save(iteration)
         return True
@@ -304,6 +306,8 @@ class JointTrainer(object):
 
                 if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
                     self.resetOpacity()
+
+            self.updateGSParams()
 
             self.renderForViewer(iteration, loss_dict)
 
