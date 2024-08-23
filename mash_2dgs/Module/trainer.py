@@ -14,13 +14,15 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 
 
 from mash_2dgs.Method.time import getCurrentTime
-from mash_2dgs.Module.mash_refiner import MashRefiner
 from mash_2dgs.Module.logger import Logger
 
 class Trainer(object):
-    def __init__(self) -> None:
+    def __init__(self,
+                 ) -> None:
+        self.logger = Logger()
         self.save_result_folder_path = "auto"
         self.save_log_folder_path = "auto"
+        self.initRecords()
 
         iterations = 30000
 
@@ -46,6 +48,7 @@ class Trainer(object):
         args.source_path = source_path
         args.images = images
         args.resolution = resolution
+        args.model_path = self.save_result_folder_path
 
         print("Optimizing " + args.model_path)
 
@@ -64,11 +67,6 @@ class Trainer(object):
 
         bg_color = [1, 1, 1] if self.dataset.white_background else [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-
-        self.mash_refiner = MashRefiner()
-        self.logger = Logger()
-
-        self.initRecords()
         return
 
     def initRecords(self) -> bool:
