@@ -17,7 +17,7 @@ from mash_2dgs.Method.time import getCurrentTime
 from mash_2dgs.Module.mash_refiner import MashRefiner
 from mash_2dgs.Module.logger import Logger
 
-class JointTrainer(object):
+class Trainer(object):
     def __init__(self) -> None:
         self.save_result_folder_path = "auto"
         self.save_log_folder_path = "auto"
