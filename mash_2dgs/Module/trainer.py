@@ -111,17 +111,20 @@ class Trainer(object):
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
         surf_normal = render_pkg['surf_normal']
-        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+        normal_dot = torch.sum(rend_normal * surf_normal, dim=0)
+        valid_dot_idxs = torch.where(normal_dot != 0)
+        valid_normal_dot = torch.abs(normal_dot[valid_dot_idxs])
+        normal_error = (1 - valid_normal_dot)
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
 
-        if iteration > self.opt.densify_until_iter:
-            opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
-        else:
-            opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
+        # opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
+        opacity_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
+
+        scaling_loss = 1e-3 * torch.nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
 
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
 
         total_loss.backward()
 
@@ -132,6 +135,7 @@ class Trainer(object):
             'dist': dist_loss.item(),
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
+            'scaling': scaling_loss.item(),
             'total': total_loss.item(),
         }
 
@@ -145,6 +149,7 @@ class Trainer(object):
         dist_loss = loss_dict['dist']
         normal_loss = loss_dict['normal']
         opacity_loss = loss_dict['opacity']
+        scaling_loss = loss_dict['scaling']
         total_loss = loss_dict['total']
 
         # Log and save
@@ -154,6 +159,7 @@ class Trainer(object):
         self.logger.addScalar('Loss/dist', dist_loss, iteration)
         self.logger.addScalar('Loss/normal', normal_loss, iteration)
         self.logger.addScalar('Loss/opacity', opacity_loss, iteration)
+        self.logger.addScalar('Loss/scaling', scaling_loss, iteration)
         self.logger.addScalar('Loss/total', total_loss, iteration)
 
         self.logger.addScalar('Gaussian/total_points', self.scene.gaussians.get_xyz.shape[0], iteration)
