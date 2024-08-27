@@ -105,6 +105,53 @@ class Trainer(object):
         rgb_loss = (1.0 - self.opt.lambda_dssim) * reg_loss + self.opt.lambda_dssim * ssim_loss
 
         lambda_normal = self.opt.lambda_normal if iteration > 7000 else 0.0
+        lambda_dist = self.opt.lambda_dist if iteration > 3000 else 0.0
+
+        rend_normal  = render_pkg['rend_normal']
+        surf_normal = render_pkg['surf_normal']
+        normal_error = (1 - rend_normal * surf_normal)
+        normal_loss = lambda_normal * normal_error.mean()
+
+        rend_dist = render_pkg["rend_dist"]
+        dist_loss = lambda_dist * rend_dist.mean()
+
+        opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+
+        scaling_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+
+        # loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
+
+        total_loss.backward()
+
+        loss_dict = {
+            'reg': reg_loss.item(),
+            'ssim': ssim_loss.item(),
+            'rgb': rgb_loss.item(),
+            'dist': dist_loss.item(),
+            'normal': normal_loss.item(),
+            'opacity': opacity_loss.item(),
+            'scaling': scaling_loss.item(),
+            'total': total_loss.item(),
+        }
+
+        return render_pkg, loss_dict
+
+    def trainStepV2(self, iteration: int, viewpoint_cam) -> Tuple[dict, dict]:
+        self.gaussians.update_learning_rate(iteration)
+
+        if iteration % 1000 == 0:
+            self.gaussians.oneupSHdegree()
+
+        render_pkg = self.renderImage(viewpoint_cam)
+        image = render_pkg["render"]
+
+        gt_image = viewpoint_cam.original_image.cuda()
+        reg_loss = l1_loss(image, gt_image)
+        ssim_loss = 1.0 - ssim(image, gt_image)
+        rgb_loss = (1.0 - self.opt.lambda_dssim) * reg_loss + self.opt.lambda_dssim * ssim_loss
+
+        lambda_normal = self.opt.lambda_normal if iteration > 7000 else 0.0
         normal_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         if lambda_normal > 0:
             rend_normal  = render_pkg['rend_normal']
@@ -125,10 +172,81 @@ class Trainer(object):
             valid_rend_dist = rend_dist[valid_dist_idxs]
             dist_loss = lambda_dist * valid_rend_dist.mean()
 
+        lambda_opacity = self.opt.lambda_opacity if hasattr(self.opt, lambda_opacity) else 1e-3
+        opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
         # opacity_loss = 1e-3 * nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
-        opacity_loss = 1e-3 * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
 
-        scaling_loss = 1e-3 * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
+        lambda_scaling = self.opt.lambda_scaling if hasattr(self.opt, lambda_scaling) else 1e-3
+        scaling_loss = lambda_scaling * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
+
+        # loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
+
+        total_loss.backward()
+
+        loss_dict = {
+            'reg': reg_loss.item(),
+            'ssim': ssim_loss.item(),
+            'rgb': rgb_loss.item(),
+            'dist': dist_loss.item(),
+            'normal': normal_loss.item(),
+            'opacity': opacity_loss.item(),
+            'scaling': scaling_loss.item(),
+            'total': total_loss.item(),
+        }
+
+        return render_pkg, loss_dict
+
+    def trainStepWithSuperParams(self,
+                                 iteration: int,
+                                 viewpoint_cam,
+                                 lambda_dssim: float = 0.2,
+                                 lambda_normal: float = 0.01,
+                                 lambda_dist: float = 100000.0,
+                                 lambda_opacity: float = 0.001,
+                                 lambda_scaling: float = 0.001,
+                                 maximum_opacity: bool = False,
+                                 ) -> Tuple[dict, dict]:
+        self.gaussians.update_learning_rate(iteration)
+
+        if iteration % 1000 == 0:
+            self.gaussians.oneupSHdegree()
+
+        render_pkg = self.renderImage(viewpoint_cam)
+        image = render_pkg["render"]
+
+        gt_image = viewpoint_cam.original_image.cuda()
+        reg_loss = l1_loss(image, gt_image)
+        ssim_loss = 1.0 - ssim(image, gt_image)
+        rgb_loss = (1.0 - lambda_dssim) * reg_loss + lambda_dssim * ssim_loss
+
+        lambda_normal = lambda_normal if iteration > 7000 else 0.0
+        normal_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        if lambda_normal > 0:
+            rend_normal  = render_pkg['rend_normal']
+            surf_normal = render_pkg['surf_normal']
+            normal_dot = torch.sum(rend_normal * surf_normal, dim=0)
+            valid_dot_idxs = torch.where(normal_dot != 0)
+            valid_normal_dot = torch.abs(normal_dot[valid_dot_idxs])
+            normal_error = (1 - valid_normal_dot)
+            normal_loss = lambda_normal * normal_error.mean()
+
+        lambda_dist = lambda_dist if iteration > 3000 else 0.0
+        #FIXME: seems this dist not work
+        lambda_dist = 0.0
+        dist_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        if lambda_dist > 0:
+            rend_dist = render_pkg["rend_dist"]
+            valid_dist_idxs = torch.where(rend_dist != 0)
+            valid_rend_dist = rend_dist[valid_dist_idxs]
+            dist_loss = lambda_dist * valid_rend_dist.mean()
+
+        if maximum_opacity:
+            opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
+        else:
+            opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
+
+        scaling_loss = lambda_scaling * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
 
         # loss
         total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss

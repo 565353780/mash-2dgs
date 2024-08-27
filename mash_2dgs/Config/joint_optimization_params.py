@@ -11,9 +11,12 @@ class JointOptimizationParams(ParamGroup):
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.percent_dense = 0.01
+
         self.lambda_dssim = 0.2
         self.lambda_dist = 100000.0
         self.lambda_normal = 0.01
+        self.lambda_opacity = 0.001
+        self.lambda_scaling = 0.001
         self.opacity_cull = 0.05
 
         self.densification_interval = 100
