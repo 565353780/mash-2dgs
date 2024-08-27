@@ -11,26 +11,29 @@
 
 import os
 import sys
-from PIL import Image
-from typing import NamedTuple
-from scene.colmap_loader import CAMERA_MODEL_NAMES, read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
-    read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
-from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
-import numpy as np
 import json
+import numpy as np
 from tqdm import tqdm
+from PIL import Image
 from pathlib import Path
+from typing import NamedTuple
+from multiprocessing import Pool
 from plyfile import PlyData, PlyElement
+
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
+from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
+    read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
+from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
+
 
 class CameraInfo(NamedTuple):
     uid: int
-    R: np.array
-    T: np.array
-    FovY: np.array
-    FovX: np.array
-    image: np.array
+    R: np.ndarray
+    T: np.ndarray
+    FovY: np.ndarray
+    FovX: np.ndarray
+    image: np.ndarray
     image_path: str
     image_name: str
     width: int
@@ -81,7 +84,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
 
         uid = intr.id
         R = np.transpose(qvec2rotmat(extr.qvec))
-        T = np.array(extr.tvec)
+        T = np.asarray(extr.tvec)
 
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
@@ -118,7 +121,7 @@ def storePly(path, xyz, rgb):
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
             ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
             ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
-    
+
     normals = np.zeros_like(xyz)
 
     elements = np.empty(xyz.shape[0], dtype=dtype)
@@ -177,6 +180,51 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
                            ply_path=ply_path)
     return scene_info
 
+def readSingleCameraFromTransform(inputs):
+    path = inputs[0]
+    white_background = inputs[1]
+    extension = inputs[2]
+    fovx = inputs[3]
+    idx = inputs[4]
+    frame = inputs[5]
+
+    cam_name = os.path.join(path, frame["file_path"])
+    if extension not in cam_name:
+        cam_name += extension
+
+    # NeRF 'transform_matrix' is a camera-to-world transform
+    c2w = np.asarray(frame["transform_matrix"])
+    # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+    c2w[:3, 1:3] *= -1
+
+    # get the world-to-camera transform and set R, T
+    w2c = np.linalg.inv(c2w)
+    R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
+    T = w2c[:3, 3]
+
+    image_path = os.path.join(path, cam_name)
+    image_name = Path(cam_name).stem
+    image = Image.open(image_path)
+
+    im_data = np.asarray(image.convert("RGBA"))
+
+    bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+
+    norm_data = im_data / 255.0
+    norm_rgb_data = norm_data[:, :, :3]
+    norm_alpha_data = norm_data[:, :, 3:4]
+    arr = norm_rgb_data * norm_alpha_data + bg * (1 - norm_alpha_data)
+    image = Image.fromarray(np.asarray(arr*255.0, dtype=np.byte), "RGB")
+
+    fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
+    FovY = fovy 
+    FovX = fovx
+
+    cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                    image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1])
+
+    return cam_info
+
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png"):
     cam_infos = []
 
@@ -185,41 +233,18 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         fovx = contents["camera_angle_x"]
 
         frames = contents["frames"]
-        for idx, frame in enumerate(tqdm(frames)):
-            cam_name = os.path.join(path, frame["file_path"])
-            if extension not in cam_name:
-                cam_name += extension
-
-            # NeRF 'transform_matrix' is a camera-to-world transform
-            c2w = np.array(frame["transform_matrix"])
-            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
-            c2w[:3, 1:3] *= -1
-
-            # get the world-to-camera transform and set R, T
-            w2c = np.linalg.inv(c2w)
-            R = np.transpose(w2c[:3,:3])  # R is stored transposed due to 'glm' in CUDA code
-            T = w2c[:3, 3]
-
-            image_path = os.path.join(path, cam_name)
-            image_name = Path(cam_name).stem
-            image = Image.open(image_path)
-
-            im_data = np.array(image.convert("RGBA"))
-
-            bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
-
-            norm_data = im_data / 255.0
-            norm_rgb_data = norm_data[:, :, :3]
-            norm_alpha_data = norm_data[:, :, 3:4]
-            arr = norm_rgb_data * norm_alpha_data + bg * (1 - norm_alpha_data)
-            image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
-
-            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-            FovY = fovy 
-            FovX = fovx
-
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+        inputs = []
+        for idx, frame in enumerate(frames):
+            inputs.append([
+                path,
+                white_background,
+                extension,
+                fovx,
+                idx,
+                frame,
+            ])
+        with Pool(os.cpu_count()) as p:
+            cam_infos = list(tqdm(p.imap(readSingleCameraFromTransform, inputs), total=len(inputs)))
 
     return cam_infos
 
@@ -228,7 +253,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
     print("Reading Test Transforms")
     test_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
-    
+
     if not eval:
         train_cam_infos.extend(test_cam_infos)
         test_cam_infos = []
@@ -240,7 +265,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
         # Since this data set has no colmap data, we start with random points
         num_pts = 100_000
         print(f"Generating random point cloud ({num_pts})...")
-        
+
         # We create random points inside the bounds of the synthetic Blender scenes
         xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
         shs = np.random.random((num_pts, 3)) / 255.0
