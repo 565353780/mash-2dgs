@@ -121,7 +121,8 @@ class Trainer(object):
         rend_dist = render_pkg["rend_dist"]
         dist_loss = lambda_dist * rend_dist.mean()
 
-        opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        # opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        opacity_loss = 1e-3 * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
         scaling_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
         surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
 
