@@ -37,8 +37,6 @@ class MashRefiner(object):
         self.save_log_folder_path = None
 
         self.print_progress = True
-
-        self.initTrainer()
         return
 
     def initTrainer(self) -> bool:
@@ -70,13 +68,14 @@ class MashRefiner(object):
     def toSurfacePoints(self, gs_points: torch.Tensor) -> torch.Tensor:
         gs_points_array = gs_points.detach().clone().cpu().numpy()
 
+        self.initTrainer()
+
         self.trainer.loadGTPoints(gs_points_array)
 
         self.trainer.autoTrainMash()
 
         with torch.no_grad():
-            mask_boundary_sample_points, in_mask_sample_points, _ = self.trainer.mash.toSamplePoints()
-            sample_points = torch.vstack([mask_boundary_sample_points, in_mask_sample_points])
+            sample_points = self.trainer.toSamplePointsWithTransform()
 
         return sample_points
 

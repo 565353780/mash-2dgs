@@ -5,6 +5,8 @@ from tqdm import tqdm
 from typing import Tuple, Union
 from random import randint
 
+import mash_cpp
+
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
@@ -119,11 +121,11 @@ class Trainer(object):
         dist_loss = lambda_dist * rend_dist.mean()
 
         opacity_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
-
         scaling_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
 
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss
 
         total_loss.backward()
 
@@ -135,12 +137,13 @@ class Trainer(object):
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
             'scaling': scaling_loss.item(),
+            'surface': surface_loss.item(),
             'total': total_loss.item(),
         }
 
         return render_pkg, loss_dict
 
-    def trainStepV2(self, iteration: int, viewpoint_cam) -> Tuple[dict, dict]:
+    def trainStepV2(self, iteration: int, viewpoint_cam, surface_points: Union[torch.Tensor, None]=None) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
         if iteration % 1000 == 0:
@@ -175,15 +178,23 @@ class Trainer(object):
             valid_rend_dist = rend_dist[valid_dist_idxs]
             dist_loss = lambda_dist * valid_rend_dist.mean()
 
-        lambda_opacity = self.opt.lambda_opacity if hasattr(self.opt, lambda_opacity) else 1e-3
+        lambda_opacity = self.opt.lambda_opacity if hasattr(self.opt, 'lambda_opacity') else 1e-3
         opacity_loss = lambda_opacity * nn.MSELoss()(self.gaussians.get_opacity, torch.zeros_like(self.gaussians._opacity))
         # opacity_loss = 1e-3 * nn.MSELoss()(self.gaussians.get_opacity, torch.ones_like(self.gaussians._opacity))
 
-        lambda_scaling = self.opt.lambda_scaling if hasattr(self.opt, lambda_scaling) else 1e-3
+        lambda_scaling = self.opt.lambda_scaling if hasattr(self.opt, 'lambda_scaling') else 1e-3
         scaling_loss = lambda_scaling * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
 
+        lambda_surface = self.opt.lambda_surface if hasattr(self.opt, 'lambda_surface') else 1e-3
+        surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        if surface_points is not None:
+            fit_loss, coverage_loss = mash_cpp.toChamferDistanceLoss(
+                self.gaussians.get_xyz, surface_points
+            )
+            surface_loss = lambda_surface * (fit_loss + coverage_loss)
+
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss
 
         total_loss.backward()
 
@@ -195,6 +206,7 @@ class Trainer(object):
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
             'scaling': scaling_loss.item(),
+            'surface': surface_loss.item(),
             'total': total_loss.item(),
         }
 
@@ -208,7 +220,9 @@ class Trainer(object):
                                  lambda_dist: float = 100000.0,
                                  lambda_opacity: float = 0.001,
                                  lambda_scaling: float = 0.001,
+                                 lambda_surface: float = 0.001,
                                  maximum_opacity: bool = False,
+                                 surface_points: Union[torch.Tensor, None]=None,
                                  ) -> Tuple[dict, dict]:
         self.gaussians.update_learning_rate(iteration)
 
@@ -251,8 +265,15 @@ class Trainer(object):
 
         scaling_loss = lambda_scaling * nn.MSELoss()(self.gaussians.get_scaling, torch.zeros_like(self.gaussians._scaling))
 
+        surface_loss = torch.zeros([1], dtype=rgb_loss.dtype).to(rgb_loss.device)
+        if surface_points is not None:
+            fit_loss, coverage_loss = mash_cpp.toChamferDistanceLoss(
+                self.gaussians.get_xyz, surface_points
+            )
+            surface_loss = lambda_surface * (fit_loss + coverage_loss)
+
         # loss
-        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss
+        total_loss = rgb_loss + dist_loss + normal_loss + opacity_loss + scaling_loss + surface_loss
 
         total_loss.backward()
 
@@ -264,6 +285,7 @@ class Trainer(object):
             'normal': normal_loss.item(),
             'opacity': opacity_loss.item(),
             'scaling': scaling_loss.item(),
+            'surface': surface_loss.item(),
             'total': total_loss.item(),
         }
 
@@ -278,6 +300,7 @@ class Trainer(object):
         normal_loss = loss_dict['normal']
         opacity_loss = loss_dict['opacity']
         scaling_loss = loss_dict['scaling']
+        surface_loss = loss_dict['surface']
         total_loss = loss_dict['total']
 
         # Log and save
@@ -288,6 +311,7 @@ class Trainer(object):
         self.logger.addScalar('Loss/normal', normal_loss, iteration)
         self.logger.addScalar('Loss/opacity', opacity_loss, iteration)
         self.logger.addScalar('Loss/scaling', scaling_loss, iteration)
+        self.logger.addScalar('Loss/surface', surface_loss, iteration)
         self.logger.addScalar('Loss/total', total_loss, iteration)
 
         self.logger.addScalar('Gaussian/total_points', self.scene.gaussians.get_xyz.shape[0], iteration)
@@ -370,12 +394,11 @@ class Trainer(object):
         self.gaussians.optimizer.zero_grad(set_to_none = True)
         return True
 
-    def saveScene(self, iteration: int) -> bool:
-        self.scene.save(iteration)
-        return True
+    def saveScene(self, iteration: int) -> str:
+        return self.scene.save(iteration)
 
     @torch.no_grad
-    def renderForViewer(self, iteration: int, loss_dict: dict) -> bool:
+    def renderForViewer(self, loss_dict: dict) -> bool:
         if network_gui.conn == None:
             network_gui.try_connect(self.dataset.render_items)
         while network_gui.conn != None:
@@ -443,5 +466,5 @@ class Trainer(object):
 
             self.updateGSParams()
 
-            self.renderForViewer(iteration, loss_dict)
+            self.renderForViewer(loss_dict)
         return True

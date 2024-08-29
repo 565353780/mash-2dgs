@@ -1,6 +1,9 @@
 import os
+import torch
+import numpy as np
+import open3d as o3d
+from tqdm import tqdm, trange
 from typing import Union
-from tqdm import tqdm
 from random import randint
 
 from mash_2dgs.Config.joint_optimization_params import JointOptimizationParams
@@ -14,7 +17,7 @@ class JointTrainer(object):
                  ) -> None:
         self.trainer = Trainer(source_path, ply_file_path, JointOptimizationParams)
 
-        anchor_num = 400
+        anchor_num = 100
         mask_degree_max = 3
         sh_degree_max = 2
         mask_boundary_sample_num = 90
@@ -34,6 +37,10 @@ class JointTrainer(object):
         self.viewpoint_stack = None
 
         self.iteration = 1
+        self.last_save_iteration = None
+        self.last_save_gs_ply_file_path = None
+        self.last_save_refined_surface_pcd_file_path = None
+        self.surface_points = None
         return
 
     def getImage(self):
@@ -49,6 +56,7 @@ class JointTrainer(object):
                   lambda_dist: float = 100000.0,
                   lambda_opacity: float = 0.001,
                   lambda_scaling: float = 0.001,
+                  lambda_surface: float = 0.001,
                   maximum_opacity: bool = False,
                   ):
         return self.trainer.trainStepWithSuperParams(
@@ -59,7 +67,9 @@ class JointTrainer(object):
             lambda_dist,
             lambda_opacity,
             lambda_scaling,
+            lambda_surface,
             maximum_opacity,
+            self.surface_points,
         )
 
     def logStep(self, loss_dict: dict) -> bool:
@@ -80,12 +90,16 @@ class JointTrainer(object):
         progress_bar.update(10)
         return True
 
-    def saveScene(self) -> bool:
+    def saveScene(self, force: bool = False) -> bool:
         if self.iteration % self.save_freq != 0:
+            if not force:
+                return True
+
+        if self.iteration == self.last_save_iteration:
             return True
 
         print("\n[ITER {}] Saving Gaussians".format(self.iteration))
-        self.trainer.saveScene(self.iteration)
+        self.last_save_gs_ply_file_path = self.trainer.saveScene(self.iteration)
         return True
 
     def densifyStep(self, render_pkg) -> bool:
@@ -108,12 +122,45 @@ class JointTrainer(object):
 
     def postProcessGS(self, loss_dict: dict) -> bool:
         self.trainer.updateGSParams()
-        self.trainer.renderForViewer(self.iteration, loss_dict)
+        self.trainer.renderForViewer(loss_dict)
         self.iteration += 1
         return True
 
-    def train(self) -> bool:
-        progress_bar = tqdm(desc="Joint training progress")
+    def refineWithMash(self) -> bool:
+        if not hasattr(self.trainer.opt, 'mash_refine_interval'):
+            print('[ERROR][JointTrainer::refineWithMash]')
+            print('\t mash_refine_interval not found in trainer.opt!')
+            return False
+
+        if self.iteration % self.trainer.opt.mash_refine_interval != 0:
+            return True
+
+        self.saveScene(True)
+
+        if self.last_save_gs_ply_file_path is None:
+            print('[ERROR][JointTrainer::refineWithMash]')
+            print('\t last save gs ply file not exist!')
+            return False
+
+        save_refined_pcd_file_path = self.last_save_gs_ply_file_path.replace('/point_cloud.ply', '/point_cloud_refined.ply')
+
+        gs_pcd = o3d.io.read_point_cloud(self.last_save_gs_ply_file_path)
+        gs_points_array = np.asarray(gs_pcd.points)
+        gs_points = torch.from_numpy(gs_points_array)
+
+        self.surface_points = self.mash_refiner.toSurfacePoints(gs_points).detach().clone().unsqueeze(0)
+        print('[INFO][JointTrainer::refineWithMash]')
+        print('\t refined surface points size :', self.surface_points.shape)
+
+        self.mash_refiner.saveSurfacePointsAsPcdFile(save_refined_pcd_file_path, True)
+
+        if os.path.exists(save_refined_pcd_file_path):
+            self.last_save_refined_surface_pcd_file_path = save_refined_pcd_file_path
+        return True
+
+    def trainGSForever(self) -> bool:
+        progress_bar = tqdm(desc="2DGS forever training progress")
+
         while True:
             render_pkg, loss_dict = self.trainStep()
 
@@ -124,4 +171,30 @@ class JointTrainer(object):
             self.resetOpacity()
 
             self.postProcessGS(loss_dict)
+
+            self.refineWithMash()
+
+    def trainGS(self, iteration_num: int = -1) -> bool:
+        if iteration_num < 0:
+            return self.trainGSForever()
+
+        progress_bar = tqdm(desc="2DGS training progress", total=iteration_num)
+
+        for _ in trange(iteration_num):
+            render_pkg, loss_dict = self.trainStep()
+
+            self.preProcessGS(progress_bar, loss_dict)
+
+            self.densifyStep(render_pkg)
+
+            self.resetOpacity()
+
+            self.postProcessGS(loss_dict)
+
+            self.refineWithMash()
+        return True
+
+    def train(self) -> bool:
+        self.trainGSForever()
+        # self.trainGS(35000)
         return True
