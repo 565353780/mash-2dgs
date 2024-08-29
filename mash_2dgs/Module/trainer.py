@@ -2,7 +2,7 @@ import os
 import torch
 from torch import nn
 from tqdm import tqdm
-from typing import Tuple
+from typing import Tuple, Union
 from random import randint
 
 from scene import Scene, GaussianModel
@@ -20,7 +20,8 @@ from mash_2dgs.Module.logger import Logger
 class Trainer(object):
     def __init__(self,
                  source_path: str,
-                 op_func= OptimizationParams,
+                 ply_file_path: Union[str, None]=None,
+                 op_func = OptimizationParams,
                  ) -> None:
         self.logger = Logger()
         self.save_result_folder_path = "auto"
@@ -63,6 +64,8 @@ class Trainer(object):
         # torch.autograd.set_detect_anomaly(True)
 
         self.gaussians = GaussianModel(self.dataset.sh_degree)
+        if os.path.exists(ply_file_path):
+            self.gaussians.load_ply(ply_file_path)
         self.scene = Scene(self.dataset, self.gaussians)
         self.gaussians.training_setup(self.opt)
 

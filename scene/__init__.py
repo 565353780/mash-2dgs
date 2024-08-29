@@ -79,7 +79,7 @@ class Scene:
                                                            "point_cloud",
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
-        else:
+        elif not self.gaussians.isValid():
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
     def save(self, iteration):

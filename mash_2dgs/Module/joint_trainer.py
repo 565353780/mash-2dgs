@@ -1,3 +1,5 @@
+import os
+from typing import Union
 from tqdm import tqdm
 from random import randint
 
@@ -8,8 +10,9 @@ from mash_2dgs.Module.mash_refiner import MashRefiner
 class JointTrainer(object):
     def __init__(self,
                  source_path: str,
+                 ply_file_path: Union[str, None]=None,
                  ) -> None:
-        self.trainer = Trainer(source_path, JointOptimizationParams)
+        self.trainer = Trainer(source_path, ply_file_path, JointOptimizationParams)
 
         anchor_num = 400
         mask_degree_max = 3

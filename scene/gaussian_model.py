@@ -62,6 +62,9 @@ class GaussianModel:
         self.clone_pts_num = 0
         self.prune_pts_num = 0
 
+    def isValid(self) -> bool:
+        return self._xyz.shape[0] > 0
+
     def capture(self):
         return (
             self.active_sh_degree,
@@ -255,6 +258,7 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
         self.active_sh_degree = self.max_sh_degree
 
