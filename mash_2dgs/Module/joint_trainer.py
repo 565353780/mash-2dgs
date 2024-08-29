@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 import open3d as o3d
-from tqdm import tqdm, trange
+from tqdm import tqdm
 from typing import Union
 from random import randint
 
@@ -13,9 +13,10 @@ from mash_2dgs.Module.mash_refiner import MashRefiner
 class JointTrainer(object):
     def __init__(self,
                  source_path: str,
+                 images: str,
                  ply_file_path: Union[str, None]=None,
                  ) -> None:
-        self.trainer = Trainer(source_path, ply_file_path, JointOptimizationParams)
+        self.trainer = Trainer(source_path, images, ply_file_path, JointOptimizationParams)
 
         anchor_num = 100
         mask_degree_max = 3
@@ -158,7 +159,7 @@ class JointTrainer(object):
             self.last_save_refined_surface_pcd_file_path = save_refined_pcd_file_path
         return True
 
-    def trainGSForever(self) -> bool:
+    def trainForever(self) -> bool:
         progress_bar = tqdm(desc="2DGS forever training progress")
 
         while True:
@@ -174,13 +175,13 @@ class JointTrainer(object):
 
             self.refineWithMash()
 
-    def trainGS(self, iteration_num: int = -1) -> bool:
+    def train(self, iteration_num: int = -1) -> bool:
         if iteration_num < 0:
-            return self.trainGSForever()
+            return self.trainForever()
 
         progress_bar = tqdm(desc="2DGS training progress", total=iteration_num)
 
-        for _ in trange(iteration_num):
+        for _ in range(iteration_num):
             render_pkg, loss_dict = self.trainStep()
 
             self.preProcessGS(progress_bar, loss_dict)
@@ -192,9 +193,4 @@ class JointTrainer(object):
             self.postProcessGS(loss_dict)
 
             self.refineWithMash()
-        return True
-
-    def train(self) -> bool:
-        self.trainGSForever()
-        # self.trainGS(35000)
         return True

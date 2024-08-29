@@ -2,9 +2,10 @@ from mash_2dgs.Module.joint_trainer import JointTrainer
 
 def demo():
     source_path = '/home/chli/Dataset/BlenderNeRF/bunny/'
-    ply_file_path = './output/20240827_18:01:11/point_cloud/iteration_35000/point_cloud.ply'
-    ply_file_path = ''
+    source_path = '/home/chli/Dataset/NeRF/hotdog_train/'
+    images = 'dense/images'
+    ply_file_path = None
 
-    joint_trainer = JointTrainer(source_path, ply_file_path)
-    joint_trainer.train()
+    joint_trainer = JointTrainer(source_path, images, ply_file_path)
+    joint_trainer.train(35000)
     return True

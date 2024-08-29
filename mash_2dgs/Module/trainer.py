@@ -2,8 +2,8 @@ import os
 import torch
 from torch import nn
 from tqdm import tqdm
-from typing import Tuple, Union
 from random import randint
+from typing import Tuple, Union
 
 import mash_cpp
 
@@ -22,6 +22,7 @@ from mash_2dgs.Module.logger import Logger
 class Trainer(object):
     def __init__(self,
                  source_path: str,
+                 images: str,
                  ply_file_path: Union[str, None]=None,
                  op_func = OptimizationParams,
                  ) -> None:
@@ -37,7 +38,6 @@ class Trainer(object):
         ip = "127.0.0.1"
         port = 6009
 
-        images = 'images'
         resolution = 2
 
         # Set up command line argument parser
@@ -426,10 +426,10 @@ class Trainer(object):
 
         return True
 
-    def train(self):
+    def trainForever(self) -> bool:
         viewpoint_stack = None
 
-        progress_bar = tqdm(desc="Training progress")
+        progress_bar = tqdm(desc="Training forever progress")
         iteration = 0
         while True:
             iteration += 1
@@ -469,4 +469,51 @@ class Trainer(object):
             self.updateGSParams()
 
             self.renderForViewer(loss_dict)
+
+    def train(self, iteration_num: int = -1):
+        if iteration_num < 0:
+            return self.trainForever()
+
+        viewpoint_stack = None
+
+        progress_bar = tqdm(desc="Training progress", total=iteration_num)
+        iteration = 1
+        for _ in range(iteration_num):
+            # Pick a random Camera
+            if not viewpoint_stack:
+                viewpoint_stack = self.scene.getTrainCameras().copy()
+            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+
+            render_pkg, loss_dict = self.trainStep(iteration, viewpoint_cam)
+
+            if iteration % 10 == 0:
+                bar_loss_dict = {
+                    "rgb": f"{loss_dict['rgb']:.{5}f}",
+                    "distort": f"{loss_dict['dist']:.{5}f}",
+                    "normal": f"{loss_dict['normal']:.{5}f}",
+                    "Points": f"{len(self.gaussians.get_xyz)}"
+                }
+                progress_bar.set_postfix(bar_loss_dict)
+                progress_bar.update(10)
+
+            self.logStep(iteration, loss_dict)
+
+            if iteration % self.save_freq == 0:
+                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                self.saveScene(iteration)
+
+            # Densification
+            if iteration < self.opt.densify_until_iter:
+                self.recordGrads(render_pkg)
+                if iteration > self.opt.densify_from_iter and iteration % self.opt.densification_interval == 0:
+                    self.densifyStep()
+
+                if iteration % self.opt.opacity_reset_interval == 0 or (self.dataset.white_background and iteration == self.opt.densify_from_iter):
+                    self.resetOpacity()
+
+            self.updateGSParams()
+
+            self.renderForViewer(loss_dict)
+
+            iteration += 1
         return True
