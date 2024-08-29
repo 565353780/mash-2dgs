@@ -66,8 +66,9 @@ class Trainer(object):
         # torch.autograd.set_detect_anomaly(True)
 
         self.gaussians = GaussianModel(self.dataset.sh_degree)
-        if os.path.exists(ply_file_path):
-            self.gaussians.load_ply(ply_file_path)
+        if ply_file_path is not None:
+            if os.path.exists(ply_file_path):
+                self.gaussians.load_ply(ply_file_path)
         self.scene = Scene(self.dataset, self.gaussians)
         self.gaussians.training_setup(self.opt)
 
