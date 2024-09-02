@@ -84,6 +84,8 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0
         self.lambda_normal = 0.05
+        # TODO: activate this for better geometry
+        # self.lambda_normal = 0.01
         self.opacity_cull = 0.05
 
         self.densification_interval = 100

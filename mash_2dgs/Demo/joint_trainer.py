@@ -1,11 +1,14 @@
+from mash_2dgs.Config.custom_path import DATA_DICTS, TEST_DATA_NAME
 from mash_2dgs.Module.joint_trainer import JointTrainer
 
-def demo():
-    source_path = '/home/chli/Dataset/BlenderNeRF/bunny/'
-    source_path = '/home/chli/Dataset/NeRF/hotdog_train/'
-    images = 'dense/images'
-    ply_file_path = None
+def demo(anchor_num: int = 400):
+    data_dict = DATA_DICTS[TEST_DATA_NAME]
 
-    joint_trainer = JointTrainer(source_path, images, ply_file_path)
+    source_path = data_dict['source_path']
+    images = data_dict['images']
+    ply_file_path = data_dict['ply_file_path']
+    # anchor_num = 400
+
+    joint_trainer = JointTrainer(source_path, images, ply_file_path, anchor_num)
     joint_trainer.train(35000)
     return True

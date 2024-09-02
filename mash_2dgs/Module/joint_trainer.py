@@ -15,10 +15,11 @@ class JointTrainer(object):
                  source_path: str,
                  images: str,
                  ply_file_path: Union[str, None]=None,
+                 anchor_num: int=400,
                  ) -> None:
         self.trainer = Trainer(source_path, images, ply_file_path, JointOptimizationParams)
 
-        anchor_num = 100
+        # anchor_num = 400
         mask_degree_max = 3
         sh_degree_max = 2
         mask_boundary_sample_num = 90
@@ -60,6 +61,8 @@ class JointTrainer(object):
                   lambda_surface: float = 0.001,
                   maximum_opacity: bool = False,
                   ):
+        lambda_opacity = 0
+        lambda_scaling = 0
         return self.trainer.trainStepWithSuperParams(
             self.iteration,
             self.getImage(),
@@ -160,7 +163,7 @@ class JointTrainer(object):
         return True
 
     def trainForever(self) -> bool:
-        progress_bar = tqdm(desc="2DGS forever training progress")
+        progress_bar = tqdm(desc="MASH-2DGS forever training progress")
 
         while True:
             render_pkg, loss_dict = self.trainStep()
@@ -179,9 +182,9 @@ class JointTrainer(object):
         if iteration_num < 0:
             return self.trainForever()
 
-        progress_bar = tqdm(desc="2DGS training progress", total=iteration_num)
+        progress_bar = tqdm(desc="MASH-2DGS training progress", total=iteration_num)
 
-        for _ in range(iteration_num):
+        for i in range(iteration_num):
             render_pkg, loss_dict = self.trainStep()
 
             self.preProcessGS(progress_bar, loss_dict)
@@ -192,5 +195,7 @@ class JointTrainer(object):
 
             self.postProcessGS(loss_dict)
 
-            self.refineWithMash()
+            if i < iteration_num - 1:
+                self.refineWithMash()
+
         return True
