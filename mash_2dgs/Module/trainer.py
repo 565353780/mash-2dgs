@@ -31,7 +31,7 @@ class Trainer(object):
         self.logger = Logger()
         self.save_result_folder_path = save_result_folder_path
         self.save_log_folder_path = save_result_folder_path
-        #self.initRecords()
+        self.initRecords()
 
         self.test_freq = 5000
         self.save_freq = 5000
