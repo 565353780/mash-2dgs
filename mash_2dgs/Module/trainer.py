@@ -17,19 +17,21 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 
 
 from mash_2dgs.Method.time import getCurrentTime
+from mash_2dgs.Method.cmd import runCMD
 from mash_2dgs.Module.logger import Logger
 
 class Trainer(object):
     def __init__(self,
                  source_path: str,
                  images: str,
+                 save_result_folder_path: str,
                  ply_file_path: Union[str, None]=None,
                  op_func = OptimizationParams,
                  ) -> None:
         self.logger = Logger()
-        self.save_result_folder_path = "auto"
-        self.save_log_folder_path = "auto"
-        self.initRecords()
+        self.save_result_folder_path = save_result_folder_path
+        self.save_log_folder_path = save_result_folder_path
+        #self.initRecords()
 
         self.test_freq = 5000
         self.save_freq = 5000
@@ -62,7 +64,7 @@ class Trainer(object):
 
         safe_state(quiet)
 
-        network_gui.init(ip, port)
+        # network_gui.init(ip, port)
         # torch.autograd.set_detect_anomaly(True)
 
         self.gaussians = GaussianModel(self.dataset.sh_degree)
@@ -84,7 +86,7 @@ class Trainer(object):
         if self.save_result_folder_path == "auto":
             self.save_result_folder_path = "./output/" + current_time + "/"
         if self.save_log_folder_path == "auto":
-            self.save_log_folder_path = "./output/" + current_time + "/"
+            self.save_log_folder_path = "./logs/" + current_time + "/"
 
         if self.save_result_folder_path is not None:
             os.makedirs(self.save_result_folder_path, exist_ok=True)
@@ -462,4 +464,27 @@ class Trainer(object):
             self.renderForViewer(loss_dict)
 
             iteration += 1
+        return True
+
+    def convertToMesh(self, iteration: int) -> bool:
+        saved_result_folder_path = self.save_result_folder_path + 'point_cloud/iteration_' + str(iteration) + '/'
+        if not os.path.exists(saved_result_folder_path):
+            print('[ERROR][Trainer::convertToMesh]')
+            print('\t saved result not found!')
+            print('\t saved_result_folder_path :', saved_result_folder_path)
+            return False
+
+        command = 'python render.py' + \
+            ' -s ' + self.dataset.source_path + \
+            ' --images ' + self.dataset.images + \
+            ' -m ' + self.save_result_folder_path + \
+            ' --num_cluster 1' + \
+            ' --iteration ' + str(iteration)
+
+        if not runCMD(command):
+            print('[ERROR][Trainer::convertToMesh]')
+            print('\t runCMD failed!')
+            print('\t command :', command)
+            return False
+
         return True

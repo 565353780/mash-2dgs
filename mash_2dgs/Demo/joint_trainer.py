@@ -6,9 +6,11 @@ def demo(anchor_num: int = 400):
 
     source_path = data_dict['source_path']
     images = data_dict['images']
+    save_result_folder_path = './output/' + TEST_DATA_NAME + '_mash-' + str(anchor_num) + 'anc/'
     ply_file_path = data_dict['ply_file_path']
     # anchor_num = 400
 
-    joint_trainer = JointTrainer(source_path, images, ply_file_path, anchor_num)
+    joint_trainer = JointTrainer(source_path, images, save_result_folder_path, ply_file_path, anchor_num)
     joint_trainer.train(35000)
+    joint_trainer.convertToMesh(35000)
     return True

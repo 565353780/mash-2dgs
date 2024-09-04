@@ -14,10 +14,11 @@ class JointTrainer(object):
     def __init__(self,
                  source_path: str,
                  images: str,
+                 save_result_folder_path: str,
                  ply_file_path: Union[str, None]=None,
                  anchor_num: int=400,
                  ) -> None:
-        self.trainer = Trainer(source_path, images, ply_file_path, JointOptimizationParams)
+        self.trainer = Trainer(source_path, images, save_result_folder_path, ply_file_path, JointOptimizationParams)
 
         # anchor_num = 400
         mask_degree_max = 3
@@ -61,8 +62,6 @@ class JointTrainer(object):
                   lambda_surface: float = 0.001,
                   maximum_opacity: bool = False,
                   ):
-        lambda_opacity = 0
-        lambda_scaling = 0
         return self.trainer.trainStepWithSuperParams(
             self.iteration,
             self.getImage(),
@@ -127,7 +126,6 @@ class JointTrainer(object):
     def postProcessGS(self, loss_dict: dict) -> bool:
         self.trainer.updateGSParams()
         self.trainer.renderForViewer(loss_dict)
-        self.iteration += 1
         return True
 
     def refineWithMash(self) -> bool:
@@ -178,14 +176,37 @@ class JointTrainer(object):
 
             self.refineWithMash()
 
+            self.iteration += 1
+
     def train(self, iteration_num: int = -1) -> bool:
         if iteration_num < 0:
             return self.trainForever()
 
+        lambda_dssim = 0.2
+        lambda_normal = 0.01
+        lambda_dist = 100000.0
+        lambda_opacity = 0.001
+        lambda_scaling = 0.001
+        lambda_surface = 0.001
+        maximum_opacity = False
+
         progress_bar = tqdm(desc="MASH-2DGS training progress", total=iteration_num)
 
         for i in range(iteration_num):
-            render_pkg, loss_dict = self.trainStep()
+            if self.iteration < 20000:
+                new_lambda_surface = 0.0
+            else:
+                new_lambda_surface = lambda_surface
+
+            render_pkg, loss_dict = self.trainStep(
+                lambda_dssim,
+                lambda_normal,
+                lambda_dist,
+                lambda_opacity,
+                lambda_scaling,
+                new_lambda_surface,
+                maximum_opacity,
+            )
 
             self.preProcessGS(progress_bar, loss_dict)
 
@@ -195,7 +216,13 @@ class JointTrainer(object):
 
             self.postProcessGS(loss_dict)
 
-            if i < iteration_num - 1:
-                self.refineWithMash()
+            if new_lambda_surface > 0:
+                if i < iteration_num - 1:
+                    self.refineWithMash()
+
+            self.iteration += 1
 
         return True
+
+    def convertToMesh(self, iteration: int) -> bool:
+        return self.trainer.convertToMesh(iteration)

@@ -9,6 +9,16 @@ DATA_DICTS = {
         'images': 'dense/images',
         'ply_file_path': None,
     },
+    'dtu_37_max': {
+        'source_path': '/home/chli/github/ASDF/colmap-manage/output/dtu_37_max/gs/',
+        'images': 'images',
+        'ply_file_path': None,
+    },
+    'dtu_110_max': {
+        'source_path': '/home/chli/github/ASDF/colmap-manage/output/dtu_110_max/gs/',
+        'images': 'images',
+        'ply_file_path': None,
+    },
 }
 
-TEST_DATA_NAME = 'bunny'
+TEST_DATA_NAME = 'dtu_37_max'
