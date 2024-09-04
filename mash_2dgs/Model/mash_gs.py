@@ -21,17 +21,20 @@ from ma_sh.Method.pcd import getPointCloud, downSample
 from mash_2dgs.Method.rotation import matrix_to_quaternion
 
 class MashGS(object):
-    def __init__(self, sh_degree: int, anchor_num: int=400,
+    def __init__(self, sh_degree: int, anchor_num: int=20000,
         mask_degree_max: int = 0,
         sh_degree_max: int = 0,
-        sample_phi_num: int = 10,
-        sample_theta_num: int = 40,
+        sample_phi_num: int = 4,
+        sample_theta_num: int = 1,
         use_inv: bool = True,
         idx_dtype=torch.int64,
         dtype=torch.float32,
         device: str = "cuda"):
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
+        self._xyz = torch.empty(0)
+        self._scaling = torch.empty(0)
+        self._rotation = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
         self._opacity = torch.empty(0)
@@ -46,7 +49,7 @@ class MashGS(object):
         self.mash = SimpleMash(anchor_num, mask_degree_max, sh_degree_max, sample_phi_num, sample_theta_num, use_inv, idx_dtype, dtype, device)
         self.mash.setGradState(True)
 
-        self.surface_dist = 0.5
+        self.surface_dist = 0.02
         self.split_dist_weight = 4.0
 
         self.split_thresh = 0.2
@@ -60,13 +63,39 @@ class MashGS(object):
         self.gt_points = torch.empty(0)
         return
 
+    def isValid(self) -> bool:
+        return self.get_xyz.shape[0] > 0
+
+    def fixGrads(self) -> bool:
+        if self.mash.mask_params.grad is None:
+            return True
+
+        self.mash.mask_params.grad[torch.isnan(self.mash.mask_params.grad)] = 0.0
+        self.mash.sh_params.grad[torch.isnan(self.mash.sh_params.grad)] = 0.0
+        self.mash.rotate_vectors.grad[torch.isnan(self.mash.rotate_vectors.grad)] = 0.0
+        self.mash.positions.grad[torch.isnan(self.mash.positions.grad)] = 0.0
+        return True
+
+    def checkNan(self) -> bool:
+        assert torch.where(torch.isnan(self.mash.mask_params))[0].shape[0] == 0
+        assert torch.where(torch.isnan(self.mash.sh_params))[0].shape[0] == 0
+        assert torch.where(torch.isnan(self.mash.rotate_vectors))[0].shape[0] == 0
+        assert torch.where(torch.isnan(self.mash.positions))[0].shape[0] == 0
+        return True
+
     def updateGSParams(self) -> bool:
         centers, axis_lengths, rotate_matrixs = self.mash.toSimpleSampleEllipses()
+
+        if axis_lengths.shape[0] == 0:
+            print('[ERROR][MashGS::updateGSParams]')
+            print('\t toSimpleSampleEllipses failed! will stop now!')
+            exit()
 
         axis_lengths[torch.isnan(axis_lengths)] = 0.0
         self._xyz = centers
         self._scaling = axis_lengths
         self._rotation = matrix_to_quaternion(rotate_matrixs)
+
         return True
 
     def setup_functions(self):
@@ -422,6 +451,7 @@ class MashGS(object):
         "opacity": new_opacities}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
+
         self.mash.anchor_num = optimizable_tensors["positions"].shape[0]
         self.mash.reset()
         self.mash.mask_params = optimizable_tensors["mask_params"]

@@ -6,7 +6,8 @@ def demo():
 
     source_path = data_dict['source_path']
     images = data_dict['images']
-    save_result_folder_path = './output/' + TEST_DATA_NAME + '_2dgs/'
+    save_result_folder_path = './output/' + TEST_DATA_NAME + '_mashgs/'
+    save_result_folder_path = 'auto'
     conda_env_name = 'gs'
 
     trainer = Trainer(source_path, images, save_result_folder_path)

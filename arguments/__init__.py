@@ -85,8 +85,14 @@ class OptimizationParams(ParamGroup):
         self.lambda_dist = 0.0
         self.lambda_normal = 0.05
         # TODO: activate this for better geometry
-        # self.lambda_normal = 0.01
+        self.lambda_normal = 0.01
         self.opacity_cull = 0.05
+
+        self.mask_lr = 0.001
+        self.sh_lr = 0.001
+        self.rotate_lr = 0.001
+        self.mash_position_lr_init = 0.00016
+        self.mash_position_lr_final = 0.0000016
 
         self.densification_interval = 100
         self.opacity_reset_interval = 3000

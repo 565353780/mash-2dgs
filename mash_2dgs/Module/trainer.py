@@ -7,6 +7,7 @@ from typing import Tuple, Union
 
 import mash_cpp
 
+from mash_2dgs.Method.render import renderMashGS
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
@@ -15,9 +16,9 @@ from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
-
 from mash_2dgs.Method.time import getCurrentTime
 from mash_2dgs.Method.cmd import runCMD
+from mash_2dgs.Model.mash_gs import MashGS
 from mash_2dgs.Module.logger import Logger
 
 class Trainer(object):
@@ -67,7 +68,8 @@ class Trainer(object):
         # network_gui.init(ip, port)
         # torch.autograd.set_detect_anomaly(True)
 
-        self.gaussians = GaussianModel(self.dataset.sh_degree)
+        # self.gaussians = GaussianModel(self.dataset.sh_degree)
+        self.gaussians = MashGS(self.dataset.sh_degree)
         if ply_file_path is not None:
             if os.path.exists(ply_file_path):
                 self.gaussians.load_ply(ply_file_path)
@@ -76,6 +78,8 @@ class Trainer(object):
 
         bg_color = [1, 1, 1] if self.dataset.white_background else [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+
+        self.render_freq = -1
         return
 
     def initRecords(self) -> bool:
@@ -86,7 +90,7 @@ class Trainer(object):
         if self.save_result_folder_path == "auto":
             self.save_result_folder_path = "./output/" + current_time + "/"
         if self.save_log_folder_path == "auto":
-            self.save_log_folder_path = "./logs/" + current_time + "/"
+            self.save_log_folder_path = "./output/" + current_time + "/"
 
         if self.save_result_folder_path is not None:
             os.makedirs(self.save_result_folder_path, exist_ok=True)
@@ -100,7 +104,7 @@ class Trainer(object):
 
     def trainStep(self, iteration: int, viewpoint_cam) -> Tuple[dict, dict]:
         # TODO: activate this to gain better geometry! now for comparing with source 2DGS only
-        # return self.trainStepV2(iteration, viewpoint_cam)
+        return self.trainStepV2(iteration, viewpoint_cam)
         self.gaussians.update_learning_rate(iteration)
 
         if iteration % 1000 == 0:
@@ -154,7 +158,8 @@ class Trainer(object):
             self.opt.lambda_dssim,
             self.opt.lambda_normal,
             self.opt.lambda_dist,
-            0, 0, 0, False, None
+            0.001, 0.1,
+            0, False, None
         )
 
     def trainStepWithSuperParams(self,
@@ -270,6 +275,8 @@ class Trainer(object):
         self.logger.addScalar('Gaussian/split_num', self.gaussians.split_pts_num, iteration)
         self.logger.addScalar('Gaussian/clone_num', self.gaussians.clone_pts_num, iteration)
         self.logger.addScalar('Gaussian/prune_num', self.gaussians.prune_pts_num, iteration)
+        if isinstance(self.gaussians, MashGS):
+            self.logger.addScalar('Gaussian/anchor_num', self.gaussians.mash.anchor_num, iteration)
 
         # Report test and samples of training set
         if iteration % self.test_freq == 0:
@@ -340,8 +347,14 @@ class Trainer(object):
         return True
 
     def updateGSParams(self) -> bool:
+        self.gaussians.fixGrads()
         self.gaussians.optimizer.step()
         self.gaussians.optimizer.zero_grad(set_to_none = True)
+        # self.gaussians.checkNan()
+
+        if isinstance(self.gaussians, MashGS):
+            self.gaussians.updateGSParams()
+
         return True
 
     def saveScene(self, iteration: int) -> str:
@@ -461,6 +474,11 @@ class Trainer(object):
 
             self.updateGSParams()
 
+            if isinstance(self.gaussians, MashGS):
+                if self.render_freq > 0:
+                    if iteration % self.render_freq == 0:
+                        renderMashGS(self.gaussians)
+
             self.renderForViewer(loss_dict)
 
             iteration += 1
@@ -480,6 +498,9 @@ class Trainer(object):
             ' -m ' + self.save_result_folder_path + \
             ' --num_cluster 1' + \
             ' --iteration ' + str(iteration)
+
+        os.system(command)
+        return True
 
         if not runCMD(command):
             print('[ERROR][Trainer::convertToMesh]')
