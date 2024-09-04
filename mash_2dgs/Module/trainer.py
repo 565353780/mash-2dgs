@@ -466,7 +466,7 @@ class Trainer(object):
             iteration += 1
         return True
 
-    def convertToMesh(self, iteration: int) -> bool:
+    def convertToMesh(self, conda_env_name: str, iteration: int) -> bool:
         saved_result_folder_path = self.save_result_folder_path + 'point_cloud/iteration_' + str(iteration) + '/'
         if not os.path.exists(saved_result_folder_path):
             print('[ERROR][Trainer::convertToMesh]')
@@ -474,7 +474,7 @@ class Trainer(object):
             print('\t saved_result_folder_path :', saved_result_folder_path)
             return False
 
-        command = 'python render.py' + \
+        command = 'conda run -n ' + conda_env_name + ' python render.py' + \
             ' -s ' + self.dataset.source_path + \
             ' --images ' + self.dataset.images + \
             ' -m ' + self.save_result_folder_path + \

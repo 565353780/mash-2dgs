@@ -16,11 +16,13 @@ class JointTrainer(object):
                  images: str,
                  save_result_folder_path: str,
                  ply_file_path: Union[str, None]=None,
-                 anchor_num: int=400,
+                 anchor_cluster_point_num: int=100,
                  ) -> None:
+        self.anchor_cluster_point_num = anchor_cluster_point_num
+
         self.trainer = Trainer(source_path, images, save_result_folder_path, ply_file_path, JointOptimizationParams)
 
-        # anchor_num = 400
+        anchor_num = 400
         mask_degree_max = 3
         sh_degree_max = 2
         mask_boundary_sample_num = 90
@@ -150,6 +152,10 @@ class JointTrainer(object):
         gs_points_array = np.asarray(gs_pcd.points)
         gs_points = torch.from_numpy(gs_points_array)
 
+        self.mash_refiner.anchor_num = int(gs_points.shape[0] / self.anchor_cluster_point_num)
+        print('[INFO][JointTrainer::refineWithMash]')
+        print('\t generated anchor num :', self.mash_refiner.anchor_num)
+
         self.surface_points = self.mash_refiner.toSurfacePoints(gs_points).detach().clone().unsqueeze(0)
         print('[INFO][JointTrainer::refineWithMash]')
         print('\t refined surface points size :', self.surface_points.shape)
@@ -185,15 +191,15 @@ class JointTrainer(object):
         lambda_dssim = 0.2
         lambda_normal = 0.01
         lambda_dist = 100000.0
-        lambda_opacity = 0.001
-        lambda_scaling = 0.001
+        lambda_opacity = 0.01
+        lambda_scaling = 0.1
         lambda_surface = 0.001
         maximum_opacity = False
 
         progress_bar = tqdm(desc="MASH-2DGS training progress", total=iteration_num)
 
         for i in range(iteration_num):
-            if self.iteration < 20000:
+            if self.iteration < 20000 and False:
                 new_lambda_surface = 0.0
             else:
                 new_lambda_surface = lambda_surface
@@ -224,5 +230,5 @@ class JointTrainer(object):
 
         return True
 
-    def convertToMesh(self, iteration: int) -> bool:
-        return self.trainer.convertToMesh(iteration)
+    def convertToMesh(self, conda_env_name: str, iteration: int) -> bool:
+        return self.trainer.convertToMesh(conda_env_name, iteration)

@@ -7,8 +7,9 @@ def demo():
     source_path = data_dict['source_path']
     images = data_dict['images']
     save_result_folder_path = './output/' + TEST_DATA_NAME + '_2dgs/'
+    conda_env_name = 'gs'
 
     trainer = Trainer(source_path, images, save_result_folder_path)
     trainer.train(35000)
-    trainer.convertToMesh(35000)
+    trainer.convertToMesh(conda_env_name, 35000)
     return True
